@@ -134,3 +134,27 @@ def test_error_status_when_provider_raises(tmp_path):
     body = _wait_done(client, run_id)
     assert body["status"] == "error"
     assert "端点挂了" in body["error"]
+
+
+def test_all_sse_events_share_envelope(tmp_path):
+    """所有事件必须是同一个形状：kind / ts / data。
+
+    这条是补的。之前 end 事件少了外面那层包装，发的是 {status, result, error}，
+    前端把它当普通事件渲染，结果显示成一个空 JSON，并在 showAnswer(ev.data) 里
+    抛 TypeError。当时的测试只断言"文本里有 event: end"，没查 payload 形状，
+    所以没拦住。
+    """
+    client = _client(tmp_path, [ModelReply(text="ok", stop_reason="end_turn")])
+    run_id = client.post("/runs", json={"task": "x"}).json()["id"]
+
+    text = client.get(f"/runs/{run_id}/events").text
+    payloads = [
+        json.loads(line[len("data: "):])
+        for line in text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert payloads, "一个事件都没收到"
+    for p in payloads:
+        assert set(p) >= {"kind", "ts", "data"}, f"事件形状不对: {p}"
+        assert isinstance(p["data"], dict), f"data 不是对象: {p}"
+    assert "end" in [p["kind"] for p in payloads]

@@ -17,7 +17,7 @@ from typing import Callable
 
 from minicode.config import Settings
 from minicode.events import Recorder
-from minicode.policy import judge_tool_call
+from minicode.hooks import POST_TOOL, PRE_TOOL, HookBus, HookContext, default_hooks
 from minicode.provider import ModelReply, Provider
 from minicode.tools.base import Registry
 
@@ -76,6 +76,7 @@ def run(
     system: str = DEFAULT_SYSTEM,
     resume: dict | None = None,
     on_step: "Callable[[dict], None] | None" = None,
+    hooks: HookBus | None = None,
 ) -> RunResult:
     """跑一个任务。
 
@@ -99,7 +100,11 @@ def run(
         messages = [{"role": "user", "content": task}]
         start_step = 1
 
-    rec.add("start", task=task, model=settings.model, tools=tools.names())
+    # 不传就用默认的（只挂一个权限钩子）。传了就完全用调用方的，便于测试和扩展。
+    bus = hooks if hooks is not None else default_hooks()
+
+    rec.add("start", task=task, model=settings.model, tools=tools.names(),
+            hooks=bus.names())
     n_calls = 0
     n_denied = 0
 
@@ -133,26 +138,39 @@ def run(
 
         results: list[dict] = []
         for tc in reply.tool_calls:
-            verdict = judge_tool_call(tc.name, tc.arguments, workspace)
-            if verdict is not None and verdict.denied:
+            ctx = HookContext(
+                tool=tc.name,
+                args=dict(tc.arguments or {}),
+                workspace=workspace,
+                step=step,
+            )
+            decision = bus.run(PRE_TOOL, ctx)
+            for err in bus.drain_errors():
+                rec.add("hook_error", step=step, **err)
+
+            if decision.action == "deny":
                 n_denied += 1
                 rec.add(
                     "denied",
                     step=step,
                     tool=tc.name,
-                    reason=verdict.reason,
-                    detail=verdict.detail,
+                    reason=decision.reason,
+                    detail=decision.detail,
                     args=tc.arguments,
+                    by=decision.by,
                 )
                 results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": tc.id,
                         "is_error": True,
-                        "content": f"[denied: {verdict.reason}] {verdict.detail}",
+                        "content": f"[denied: {decision.reason}] {decision.detail}",
                     }
                 )
                 continue
+
+            # 钩子可能改写过参数，后面一律用生效后的那份
+            call_args = decision.args or ctx.args
 
             tool = tools.get(tc.name)
             if tool is None:
@@ -167,16 +185,28 @@ def run(
                 )
                 continue
 
-            tool_result = tool.run(tc.arguments, workspace)
+            tool_result = tool.run(call_args, workspace)
             rec.add(
                 "tool_call",
                 step=step,
                 tool=tc.name,
-                args=tc.arguments,
+                args=call_args,
                 exit_code=tool_result.exit_code,
                 failed=tool_result.failed,
                 meta=tool_result.meta,
             )
+
+            post_ctx = HookContext(
+                tool=tc.name,
+                args=call_args,
+                workspace=workspace,
+                step=step,
+                result=tool_result,
+            )
+            bus.run(POST_TOOL, post_ctx)
+            for err in bus.drain_errors():
+                rec.add("hook_error", step=step, **err)
+
             results.append(
                 {
                     "type": "tool_result",
