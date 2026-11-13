@@ -90,7 +90,9 @@ class InMemoryStore:
         return self._runs.get(run_id)
 
     def all(self) -> list[RunState]:
-        return sorted(self._runs.values(), key=lambda r: r.created_at, reverse=True)
+        # dict 保留插入顺序，倒过来就是最新的在前。
+        # 不用 created_at 排序：时间戳可能并列。
+        return list(reversed(list(self._runs.values())))
 
     def update(self, run: RunState) -> None:
         run.updated_at = time.time()
@@ -144,6 +146,9 @@ class RedisStore:
     def _k_index(self) -> str:
         return f"{self.PREFIX}:runs"
 
+    def _k_seq(self) -> str:
+        return f"{self.PREFIX}:seq"
+
     def _touch(self, *keys: str) -> None:
         for k in keys:
             self._r.expire(k, self._ttl)
@@ -160,7 +165,11 @@ class RedisStore:
             "event_count": 0,
             "include_files": int(run.include_files),
         })
-        self._r.zadd(self._k_index(), {run.id: run.created_at})
+        # 用自增序号当 zset 分数，不用 created_at：
+        # 实测这台机器上 time.time() 连续三次返回同一个值，并列的分数会让
+        # "最新的排最前"退化成按 id 字典序，偶发失效。
+        seq = int(self._r.incr(self._k_seq()))
+        self._r.zadd(self._k_index(), {run.id: seq})
         self._touch(self._k_run(run.id), self._k_index())
         return run
 
