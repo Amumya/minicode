@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minicode"
+version = "0.1.0"
+description = "A coding agent harness whose focus is governance: permissions, observability, and anti-cheat evaluation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Xu Bin" }]
+
+# 依赖刻意写死在已验证过的版本上。
+# 理由：后续阶段要做对照实验，依赖漂移会让两次实验的数字失去可比性。
+dependencies = [
+    "anthropic==1.11.0",
+    "python-dotenv==1.2.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+minicode = "minicode.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
