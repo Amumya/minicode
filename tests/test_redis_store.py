@@ -101,3 +101,19 @@ def test_missing_run_returns_none(store):
     assert store.get("nope") is None
     assert store.read_events("nope") == []
     assert store.get_checkpoint("nope") is None
+
+
+def test_order_when_timestamps_collide(store):
+    """时间戳并列时也要按创建顺序倒序。
+
+    实测这台机器上 time.time() 连续三次返回同一个值（计时器粒度约 15ms），
+    如果拿 created_at 当排序依据，三个 run 的分数会一样，顺序就退化成 id 字典序 ——
+    表现就是"最新建的 run 偶尔不在第一个"。
+    """
+    ids = []
+    for _ in range(3):
+        run = _run()
+        run.created_at = 1.0  # 故意做成完全相同
+        store.create(run)
+        ids.append(run.id)
+    assert [r.id for r in store.all()] == list(reversed(ids))

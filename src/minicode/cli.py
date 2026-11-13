@@ -16,11 +16,13 @@ import time
 from pathlib import Path
 
 from minicode import __version__
+from minicode.compact import CompactConfig, Compactor
 from minicode.config import Settings
 from minicode.events import Recorder
 from minicode.loop import run as run_loop
 from minicode.prompts import default_system
-from minicode.tools import default_registry
+from minicode.skills import SkillLoader
+from minicode.tools import TodoList, build_registry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--save", action="store_true", help="把轨迹写进 eval/runs/")
     r.add_argument("--json", action="store_true", help="只输出 JSON，便于脚本调用")
     r.add_argument("--quiet", action="store_true", help="不打印事件")
+    r.add_argument("--files", action="store_true", help="额外挂上文件读写工具")
+    r.add_argument("--plan", action="store_true", help="挂上 todo_write，让它可以写任务清单")
+    r.add_argument("--skills", nargs="?", const="skills", default=None,
+                   help="挂上技能加载，并把技能目录放进系统提示词（默认 ./skills）")
+    r.add_argument("--no-python-hint", action="store_true",
+                   help="不告诉 agent 该用哪个 Python 解释器（对照实验用）")
+    r.add_argument("--compact", action="store_true",
+                   help="开启上下文压缩（大工具输出落盘、旧结果截断、剪掉最早整对）")
 
     s = sub.add_parser("serve", help="起 HTTP 服务")
     s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
@@ -82,18 +92,33 @@ def cmd_run(args, provider_factory=None) -> int:
         print(f"初始化模型客户端失败: {exc}", file=sys.stderr)
         return 2
 
+    compactor = Compactor(workspace, CompactConfig()) if args.compact else None
+    skills_loader = SkillLoader(workspace / args.skills) if args.skills else None
+    todo = TodoList() if args.plan else None
+    tools = build_registry(files=args.files, todo=todo, skills=skills_loader)
+
     rec = Recorder()
     started = time.time()
     result = run_loop(
         args.task,
         provider=provider,
-        tools=default_registry(),
+        tools=tools,
         settings=settings,
         workspace=workspace,
         recorder=rec,
-        system=args.system or default_system(),
+        compactor=compactor,
+        system=args.system or default_system(
+            skills=skills_loader,
+            python_hint=None if args.no_python_hint else sys.executable,
+            plan_hint=args.plan,
+        ),
     )
     elapsed = time.time() - started
+
+    if todo is not None and todo.items and not args.json:
+        print("--- 任务清单（结束时）---")
+        print(todo.render())
+        print()
 
     payload = {
         "task": args.task,

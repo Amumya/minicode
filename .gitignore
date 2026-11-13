@@ -30,6 +30,9 @@ Thumbs.db
 # ---- 本机工具（便携 Redis 之类，二进制不入库） ----
 .tools/
 
+# ---- 上下文压缩落盘的工具输出（跑起来就有，不入库） ----
+.minicode/
+
 # ---- 前端 ----
 node_modules/
 web/.vite/
