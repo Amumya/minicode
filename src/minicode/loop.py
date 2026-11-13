@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from minicode.config import Settings
 from minicode.events import Recorder
@@ -73,17 +74,36 @@ def run(
     workspace: Path,
     recorder: Recorder | None = None,
     system: str = DEFAULT_SYSTEM,
+    resume: dict | None = None,
+    on_step: "Callable[[dict], None] | None" = None,
 ) -> RunResult:
+    """跑一个任务。
+
+    resume 用来接着跑：传上一次存下来的 {"messages": [...], "step": n, "usage": {...}}，
+    主循环就从第 n+1 步继续，而不是从头开始。
+
+    on_step 每轮结束调一次，把当前 messages 和计数器交出去存盘。
+    注意它拿到的是**已经补齐了工具结果**的 messages —— 存的时候必须是这个状态，
+    否则恢复回来会缺 tool_result，下一轮请求直接 400。
+    """
     workspace = Path(workspace).resolve()
     rec = recorder or Recorder()
-    rec.add("start", task=task, model=settings.model, tools=tools.names())
 
-    messages: list[dict] = [{"role": "user", "content": task}]
     usage_total = {"input_tokens": 0, "output_tokens": 0}
+    if resume:
+        messages: list[dict] = list(resume.get("messages") or [])
+        start_step = int(resume.get("step", 0)) + 1
+        usage_total.update(resume.get("usage") or {})
+        rec.add("resume", from_step=start_step - 1, max_steps=settings.max_steps)
+    else:
+        messages = [{"role": "user", "content": task}]
+        start_step = 1
+
+    rec.add("start", task=task, model=settings.model, tools=tools.names())
     n_calls = 0
     n_denied = 0
 
-    for step in range(1, settings.max_steps + 1):
+    for step in range(start_step, settings.max_steps + 1):
         reply = provider.complete(system, messages, tools.schemas())
         n_calls += 1
         for k in usage_total:
@@ -167,6 +187,10 @@ def run(
             )
 
         messages.append({"role": "user", "content": results})
+
+        # 工具结果补齐之后才存检查点，见上面 on_step 的说明
+        if on_step is not None:
+            on_step({"messages": messages, "step": step, "usage": usage_total})
 
     rec.add("finish", step=settings.max_steps, ok=False, reason="max_steps")
     return RunResult(
