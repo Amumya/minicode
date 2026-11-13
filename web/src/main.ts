@@ -65,7 +65,8 @@ function addEvent(ev: AgentEvent): void {
 
   row.append(time, label, detail);
   eventsEl.append(row);
-  row.scrollIntoView({ block: "nearest" });
+  // 滚到底，而不是对每一行 scrollIntoView —— 后者会把用户手动往上翻的位置顶掉
+  eventsEl.scrollTop = eventsEl.scrollHeight;
 }
 
 function showAnswer(payload: Record<string, unknown>): void {
@@ -75,6 +76,11 @@ function showAnswer(payload: Record<string, unknown>): void {
       ? `出错：${String(payload.error ?? "未知错误")}`
       : summarizeResult(result);
   answerPanel.hidden = false;
+  // 结果面板就在提交框下面，一般不用滚；但用户如果滚到事件区去了，这里把他拉回来。
+  // jsdom 里没有 scrollIntoView，所以先判一下类型，免得测试环境直接抛异常。
+  if (typeof answerPanel.scrollIntoView === "function") {
+    answerPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function subscribe(runId: string): void {
