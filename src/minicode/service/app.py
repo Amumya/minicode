@@ -32,6 +32,7 @@ from typing import Callable
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from minicode import __version__
@@ -49,6 +50,10 @@ from minicode.service.store import (
 from minicode.tools import default_registry
 
 ProviderFactory = Callable[[Settings], object]
+
+# 前端构建产物放在包旁边（web/vite.config.ts 里配的输出目录），
+# 这样不管是从源码跑还是装成包跑，路径都对得上。
+WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class RunRequest(BaseModel):
@@ -252,7 +257,7 @@ def create_app(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    @app.get("/")
+    @app.get("/api")
     def index() -> dict:
         return {
             "name": "minicode",
@@ -267,5 +272,19 @@ def create_app(
                 "GET  /healthz",
             ],
         }
+
+    # 界面挂在根路径。必须在所有接口注册完之后再挂，
+    # 否则这个覆盖 "/" 的 mount 会把后面的接口挡掉。
+    if WEB_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+    else:
+        @app.get("/")
+        def index_no_ui() -> dict:
+            return {
+                "name": "minicode",
+                "version": __version__,
+                "注意": "没找到前端产物（web/），先跑 `npm --prefix web run build`",
+                "接口": "/api",
+            }
 
     return app
