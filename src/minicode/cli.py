@@ -19,12 +19,8 @@ from minicode import __version__
 from minicode.config import Settings
 from minicode.events import Recorder
 from minicode.loop import run as run_loop
+from minicode.prompts import default_system
 from minicode.tools import default_registry
-
-DEFAULT_SYSTEM = (
-    "你是一个在命令行里干活的助手。可以用 bash 工具执行命令来完成用户的任务。"
-    "命令跑完会带上退出码，退出码非 0 表示失败。任务完成后直接给出结论，不要再调工具。"
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--save", action="store_true", help="把轨迹写进 eval/runs/")
     r.add_argument("--json", action="store_true", help="只输出 JSON，便于脚本调用")
     r.add_argument("--quiet", action="store_true", help="不打印事件")
+
+    s = sub.add_parser("serve", help="起 HTTP 服务")
+    s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
+    s.add_argument("--port", type=int, default=8080)
+    s.add_argument("--workspace", type=Path, default=None)
 
     return p
 
@@ -90,7 +91,7 @@ def cmd_run(args, provider_factory=None) -> int:
         settings=settings,
         workspace=workspace,
         recorder=rec,
-        system=args.system or DEFAULT_SYSTEM,
+        system=args.system or default_system(),
     )
     elapsed = time.time() - started
 
@@ -140,11 +141,30 @@ def cmd_run(args, provider_factory=None) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_serve(args) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            '没装 uvicorn。装法: pip install -e ".[serve]"',
+            file=sys.stderr,
+        )
+        return 2
+
+    from minicode.service import create_app
+
+    app = create_app(default_workspace=args.workspace)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
 def main(argv: list[str] | None = None, provider_factory=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "run":
         return cmd_run(args, provider_factory=provider_factory)
+    if args.command == "serve":
+        return cmd_serve(args)
     parser.print_help()
     return 2
 

@@ -11,6 +11,7 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Callable
 
 
 @dataclass
@@ -21,14 +22,21 @@ class Event:
 
 
 class Recorder:
-    """把事件攒在内存里，最后一次性写 JSON。"""
+    """把事件攒在内存里，最后一次性写 JSON。
 
-    def __init__(self) -> None:
+    on_event 是给服务层用的：事件一产生就能推给订阅者，不用等整个 run 结束。
+    不传就退化成原来"只存不发"的行为。
+    """
+
+    def __init__(self, on_event: Callable[[Event], None] | None = None) -> None:
         self.events: list[Event] = []
+        self._on_event = on_event
 
     def add(self, kind: str, **data) -> Event:
         ev = Event(kind=kind, data=data)
         self.events.append(ev)
+        if self._on_event is not None:
+            self._on_event(ev)
         return ev
 
     def kinds(self) -> list[str]:
