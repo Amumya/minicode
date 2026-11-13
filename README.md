@@ -24,7 +24,8 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - 文件读写工具（`read_file` / `write_file` / `edit_file`），默认不开，用来做对照
 - 权限判定，先把命令分词再按参数判
 - 事件记录，跑完落成 JSON
-- 命令行入口，`minicode run "任务"`
+- 命令行入口：`minicode run "任务"` / `minicode serve`
+- HTTP 服务：提交任务返回 id，事件用 SSE 推，`curl` 就能看
 - 沙箱评测：4 个任务，隐藏测试判定，防作弊有权限层和哈希比对两道
 - CI，Python 3.11 和 3.12 都跑
 
@@ -68,10 +69,11 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - [x] 命令行入口
 - [x] 文件读写工具
 - [x] 沙箱任务集和判定器
+- [x] FastAPI 服务 + SSE 事件流
 - [ ] 更难的任务（现在全过，测不出差异）
 - [ ] 上下文压缩
-- [ ] FastAPI 服务，能流式看 agent 一步步跑
-- [ ] Redis 存会话
+- [ ] Redis 存会话（现在重启就丢）
+- [ ] 前端页面
 
 ## 跑起来
 
@@ -88,6 +90,32 @@ python -m venv .venv
 $env:PYTHONPATH = "src"
 .venv\Scripts\python.exe tests\run_tests.py
 ```
+
+## 用一下
+
+命令行跑单个任务：
+
+```powershell
+minicode run "数一下 src/minicode 下有几个 py 文件"
+```
+
+起服务，然后另开一个窗口看事件流：
+
+```powershell
+# 窗口 1
+minicode serve --port 8765
+
+# 窗口 2
+curl.exe -s -X POST http://127.0.0.1:8765/runs -H "Content-Type: application/json" `
+  -d '{\"task\":\"数一下 src 下有几个 py 文件\"}'
+
+curl.exe -sN http://127.0.0.1:8765/runs/<上一步返回的 id>/events
+```
+
+事件流长这样（`start` → `model_call` → `tool_call` → `model_call` → `finish` → `end`），
+每条 `data` 都是 JSON。
+
+服务默认只监听 `127.0.0.1`。**它没有鉴权，别往公网开。**
 
 ## 环境
 
