@@ -21,8 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def latest(condition: str) -> dict | None:
+    # 只排除"不给 shell 提示"的那个变体（那是另一个实验用的），
+    # 其余按时间取最新的一份即可。
     files = [f for f in sorted((ROOT / "eval" / "runs").glob(f"sandbox_{condition}_*.json"))
-             if "hint" not in f.name]
+             if "nohint" not in f.name]
     if not files:
         return None
     return json.loads(files[-1].read_text(encoding="utf-8"))
