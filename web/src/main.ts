@@ -69,11 +69,14 @@ function addEvent(ev: AgentEvent): void {
   eventsEl.scrollTop = eventsEl.scrollHeight;
 }
 
-function showAnswer(payload: Record<string, unknown>): void {
-  const result = payload.result;
+function showAnswer(payload: Record<string, unknown> | undefined): void {
+  // 后端已经保证收尾事件带 data 那层，这里再兜一次底：
+  // 万一以后改了形状，界面最多显示"没有结果"，不能整块崩掉。
+  const p = payload ?? {};
+  const result = p.result;
   answerEl.textContent =
-    payload.status === "error"
-      ? `出错：${String(payload.error ?? "未知错误")}`
+    p.status === "error"
+      ? `出错：${String(p.error ?? "未知错误")}`
       : summarizeResult(result);
   answerPanel.hidden = false;
   // 结果面板就在提交框下面，一般不用滚；但用户如果滚到事件区去了，这里把他拉回来。

@@ -241,8 +241,19 @@ def create_app(
                     yield f"event: {ev['kind']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
                 fresh = st.get(run_id)
                 if fresh is not None and fresh.status in ("done", "error"):
-                    tail = {"status": fresh.status,
-                            "result": fresh.result, "error": fresh.error}
+                    # 收尾事件也必须和别的事件同一个形状（kind / ts / data）。
+                    # 之前这里直接发 {status, result, error}，少了外面那层，
+                    # 前端就把它当普通事件渲染，结果画出一个空 JSON，
+                    # 而且 showAnswer(ev.data) 拿到 undefined 直接抛 TypeError。
+                    tail = {
+                        "kind": "end",
+                        "ts": time.time(),
+                        "data": {
+                            "status": fresh.status,
+                            "result": fresh.result,
+                            "error": fresh.error,
+                        },
+                    }
                     yield f"event: end\ndata: {json.dumps(tail, ensure_ascii=False)}\n\n"
                     return
                 cs.clear()
