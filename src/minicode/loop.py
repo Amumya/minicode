@@ -17,6 +17,7 @@ from typing import Callable
 
 from minicode.config import Settings
 from minicode.events import Recorder
+from minicode.compact import Compactor
 from minicode.hooks import POST_TOOL, PRE_TOOL, HookBus, HookContext, default_hooks
 from minicode.provider import ModelReply, Provider
 from minicode.tools.base import Registry
@@ -77,6 +78,7 @@ def run(
     resume: dict | None = None,
     on_step: "Callable[[dict], None] | None" = None,
     hooks: HookBus | None = None,
+    compactor: Compactor | None = None,
 ) -> RunResult:
     """跑一个任务。
 
@@ -109,6 +111,13 @@ def run(
     n_denied = 0
 
     for step in range(start_step, settings.max_steps + 1):
+        # 每次调模型之前压一次。压的是"要发出去的那份"，
+        # 所以检查点里存的也是压缩后的内容 —— 恢复回来发送的东西才一致。
+        if compactor is not None:
+            messages, cstats = compactor.compact(messages)
+            if cstats.changed:
+                rec.add("compact", step=step, **cstats.as_dict())
+
         reply = provider.complete(system, messages, tools.schemas())
         n_calls += 1
         for k in usage_total:

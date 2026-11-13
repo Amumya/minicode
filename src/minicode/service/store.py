@@ -34,6 +34,9 @@ class RunState:
     updated_at: float = field(default_factory=time.time)
     event_count: int = 0
     include_files: bool = False
+    plan: bool = False
+    skills: bool = False
+    compact: bool = False
 
     def to_dict(self, events: list[dict] | None = None) -> dict:
         out = {
@@ -48,6 +51,9 @@ class RunState:
             "updated_at": self.updated_at,
             "event_count": self.event_count,
             "include_files": self.include_files,
+            "plan": self.plan,
+            "skills": self.skills,
+            "compact": self.compact,
         }
         if events is not None:
             out["events"] = events
@@ -164,6 +170,9 @@ class RedisStore:
             "updated_at": run.updated_at,
             "event_count": 0,
             "include_files": int(run.include_files),
+            "plan": int(run.plan),
+            "skills": int(run.skills),
+            "compact": int(run.compact),
         })
         # 用自增序号当 zset 分数，不用 created_at：
         # 实测这台机器上 time.time() 连续三次返回同一个值，并列的分数会让
@@ -189,6 +198,9 @@ class RedisStore:
             updated_at=float(data["updated_at"]),
             event_count=int(data.get("event_count", 0)),
             include_files=bool(int(data.get("include_files", 0))),
+            plan=bool(int(data.get("plan", 0))),
+            skills=bool(int(data.get("skills", 0))),
+            compact=bool(int(data.get("compact", 0))),
         )
 
     def all(self) -> list[RunState]:

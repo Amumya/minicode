@@ -32,11 +32,46 @@ def base_text() -> str:
     return BASE
 
 
-def default_system(shell_hint: bool = True) -> str:
+def default_system(
+    shell_hint: bool = True,
+    skills=None,
+    python_hint: str | None = None,
+    plan_hint: bool = False,
+) -> str:
     """拼出系统提示词。
 
-    shell_hint=False 用来做对照实验：同样的任务，一句环境说明不加会怎样。
+    几个参数都是为了"把环境事实告诉 agent"，而不是让它自己试出来：
+
+        shell_hint  False 时用来做对照实验：一句环境说明不加会怎样
+        skills      传 SkillLoader 时只拼**目录**（名字 + 一句描述），
+                    正文留给 agent 按需 load_skill —— 系统提示词每轮都要发
+        python_hint 该用哪个解释器。实测不说的话，agent 会用系统 python 跑
+                    pytest，失败后再花好几步去找装了 pytest 的那个
+        plan_hint   开了 todo 工具时提示它多步任务先写清单
     """
-    if not shell_hint:
-        return BASE
-    return BASE + (WINDOWS_HINT if os.name == "nt" else POSIX_HINT)
+    text = BASE if not shell_hint else BASE + (WINDOWS_HINT if os.name == "nt" else POSIX_HINT)
+
+    if python_hint:
+        text += (
+            f"\n\nPython 用这个解释器：{python_hint}"
+            "（它里面装了项目依赖；直接用 `python` 可能缺包）。"
+        )
+
+    if plan_hint:
+        text += (
+            "\n\n任务超过两三步时，先用 todo_write 把计划写下来，"
+            "每完成一步就更新清单的状态。"
+        )
+
+    catalog = ""
+    if skills is not None:
+        try:
+            catalog = skills.catalog()
+        except Exception:  # noqa: BLE001 - 技能目录读不出来不该让整轮跑挂
+            catalog = ""
+    if catalog:
+        text += (
+            "\n\n可以按需加载的技能（先看目录，真要用再调 load_skill 取全文）：\n"
+            + catalog
+        )
+    return text

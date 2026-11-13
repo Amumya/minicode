@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -36,10 +37,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from minicode import __version__
+from minicode.compact import CompactConfig, Compactor
 from minicode.config import Settings
 from minicode.events import Event, Recorder
 from minicode.loop import run as run_loop
 from minicode.prompts import default_system
+from minicode.skills import SkillLoader
 from minicode.service.store import (
     InMemoryStore,
     RedisStore,
@@ -47,7 +50,7 @@ from minicode.service.store import (
     SessionStore,
     new_id,
 )
-from minicode.tools import default_registry
+from minicode.tools import TodoList, build_registry
 
 ProviderFactory = Callable[[Settings], object]
 
@@ -62,6 +65,9 @@ class RunRequest(BaseModel):
     workspace: str | None = None
     max_steps: int | None = None
     include_files: bool = False
+    plan: bool = False
+    skills: bool = False
+    compact: bool = False
 
 
 class ResumeRequest(BaseModel):
@@ -107,6 +113,16 @@ def create_app(
             # 事件循环已关（服务正在退出），丢掉这条即可
             pass
 
+    def _skills_for(state: RunState) -> SkillLoader | None:
+        return SkillLoader(Path(state.workspace) / "skills") if state.skills else None
+
+    def _tools_for(state: RunState):
+        return build_registry(
+            files=state.include_files,
+            todo=TodoList() if state.plan else None,
+            skills=_skills_for(state),
+        )
+
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
                 resume: dict | None) -> None:
         state.status = "running"
@@ -119,19 +135,31 @@ def create_app(
             except Exception:  # noqa: BLE001 - 存检查点失败不能拖垮整个 run
                 pass
 
+        todo = TodoList() if state.plan else None
+        skills_loader = _skills_for(state)
+        compactor = Compactor(Path(state.workspace), CompactConfig()) if state.compact else None
+
         try:
             result = run_loop(
                 state.task,
                 provider=_factory(run_settings),
-                tools=default_registry(include_files=state.include_files),
+                tools=build_registry(
+                    files=state.include_files, todo=todo, skills=skills_loader),
                 settings=run_settings,
                 workspace=Path(state.workspace),
                 recorder=rec,
-                system=default_system(),
+                system=default_system(
+                    skills=skills_loader,
+                    python_hint=sys.executable,
+                    plan_hint=state.plan,
+                ),
                 resume=resume,
                 on_step=on_step,
+                compactor=compactor,
             )
             state.result = result.to_dict()
+            if todo is not None:
+                state.result["todos"] = todo.snapshot()
             state.status = "done"
         except Exception as exc:  # noqa: BLE001 - 后台线程的异常必须自己接住
             state.error = f"{type(exc).__name__}: {exc}"
@@ -186,6 +214,9 @@ def create_app(
             model=run_settings.model,
             workspace=str(workspace.resolve()),
             include_files=req.include_files,
+            plan=req.plan,
+            skills=req.skills,
+            compact=req.compact,
         )
         st.create(state)
         _start(state, run_settings, resume=None)
