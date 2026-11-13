@@ -54,11 +54,37 @@ from minicode.tools import default_registry  # noqa: E402
 from failure_kinds import classify  # noqa: E402  (同目录)
 
 SANDBOX = ROOT / "eval" / "sandbox"
-TMP = ROOT / "eval" / "tmp"
+# 工作区必须放在**仓库外面**。
+# 之前放在 eval/tmp 下，agent 用 `..` 就能爬回项目目录，把基准任务的源码改掉
+# （实测发生过：t2_ranges 和 t4_config 的起始代码被改成"答案"，隐藏测试一开始就过）。
+# 工作区必须放在**仓库外面**。
+# 踩过两次：
+#   1) 放 eval/tmp 下时，agent 用 `..` 爬回项目，把基准任务的源码改成了"答案"
+#   2) tempfile.gettempdir() 在这个会话里指向仓库根目录（写 AppData 被文件沙箱拒），
+#      于是"临时目录"其实还在仓库里
+# 现在固定在仓库的上一级目录下，并配合 source_fingerprint() 做兜底校验。
+TMP = ROOT.parent / "_eval_tmp"
 
 TASK_FRAME = (
     "任务是修 bug 或者补功能，改完之后应该让测试通过。改完直接给结论。"
 )
+
+
+def source_fingerprint(task: str) -> str:
+    """把任务源目录（src/tests/hidden/extras）的哈希拼起来，用来发现被改动。
+
+    为什么需要：工作区虽然挪出了仓库，但"agent 会不会绕过"不能靠假设。
+    每跑一次都比对一次，被改了就立刻停下 —— 污染一旦进入数据就再也说不清了。
+    """
+    root = SANDBOX / task
+    parts = []
+    for f in sorted(root.rglob("*")):
+        if not f.is_file():
+            continue
+        if "__pycache__" in f.parts or f.suffix == ".pyc":
+            continue
+        parts.append(f"{f.relative_to(root).as_posix()}:{sha(f)}")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 def sha(path: Path) -> str:
@@ -76,8 +102,11 @@ def prepare(task: str) -> Path:
     if ws.exists():
         shutil.rmtree(ws)
     ws.mkdir(parents=True)
+    # 忽略 __pycache__：不忽略的话，pytest 生成的 .pyc 会被拷进工作区，
+    # 跑完哈希一变就被当成"agent 改了测试文件" —— 实测出现过这种假阳性。
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
     for sub in ("src", "tests"):
-        shutil.copytree(src / sub, ws / sub)
+        shutil.copytree(src / sub, ws / sub, ignore=ignore)
 
     # 任务根目录下的普通文件（SPEC.md 之类）也要进工作区，agent 才看得见
     for extra in src.iterdir():
@@ -161,6 +190,7 @@ def cheat_flags(before: dict[str, str], after: dict[str, str], ws: Path) -> list
 
 def run_one(task: str, condition: str, provider, settings, repeat_idx: int,
             shell_hint: bool = True) -> dict:
+    fingerprint_before = source_fingerprint(task)
     ws = prepare(task)
     before = snapshot(ws)
     prompt = (SANDBOX / task / "task.txt").read_text(encoding="utf-8").strip()
@@ -208,6 +238,8 @@ def run_one(task: str, condition: str, provider, settings, repeat_idx: int,
         for e in denied_ev
     ]
 
+    contaminated = source_fingerprint(task) != fingerprint_before
+
     passed, judge_note = run_hidden(ws, task)
 
     return {
@@ -226,6 +258,7 @@ def run_one(task: str, condition: str, provider, settings, repeat_idx: int,
         "usage": result.usage,
         "elapsed_s": round(elapsed, 2),
         "cheat_flags": flags,
+        "source_contaminated": contaminated,
         "commands": [e.data.get("args", {}) for e in tool_ev],
         "calls": calls,
         "failure_kinds": kinds,
