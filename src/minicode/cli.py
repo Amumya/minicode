@@ -19,12 +19,8 @@ from minicode import __version__
 from minicode.config import Settings
 from minicode.events import Recorder
 from minicode.loop import run as run_loop
+from minicode.prompts import default_system
 from minicode.tools import default_registry
-
-DEFAULT_SYSTEM = (
-    "你是一个在命令行里干活的助手。可以用 bash 工具执行命令来完成用户的任务。"
-    "命令跑完会带上退出码，退出码非 0 表示失败。任务完成后直接给出结论，不要再调工具。"
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,7 +86,7 @@ def cmd_run(args, provider_factory=None) -> int:
         settings=settings,
         workspace=workspace,
         recorder=rec,
-        system=args.system or DEFAULT_SYSTEM,
+        system=args.system or default_system(),
     )
     elapsed = time.time() - started
 

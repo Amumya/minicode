@@ -21,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def latest(condition: str) -> dict | None:
-    files = sorted((ROOT / "eval" / "runs").glob(f"sandbox_{condition}_*.json"))
+    files = [f for f in sorted((ROOT / "eval" / "runs").glob(f"sandbox_{condition}_*.json"))
+             if "hint" not in f.name]
     if not files:
         return None
     return json.loads(files[-1].read_text(encoding="utf-8"))
