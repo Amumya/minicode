@@ -30,6 +30,11 @@ Thumbs.db
 # ---- 本机工具（便携 Redis 之类，二进制不入库） ----
 .tools/
 
+# ---- 前端 ----
+node_modules/
+web/.vite/
+web/dist/
+
 # ---- 运行时产物 ----
 *.log
 eval/tmp/

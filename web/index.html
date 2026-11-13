@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>minicode</title>
+  </head>
+  <body>
+    <header>
+      <h1>minicode</h1>
+      <span id="store" class="muted"></span>
+    </header>
+
+    <main>
+      <section class="panel">
+        <label for="task">任务</label>
+        <textarea id="task" rows="3" placeholder="例如：数一下 src 下有几个 py 文件"></textarea>
+        <div class="row">
+          <label class="inline">
+            最大步数
+            <input id="maxSteps" type="number" min="1" max="20" value="8" />
+          </label>
+          <button id="submit">提交</button>
+          <span id="status" class="muted"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>事件</h2>
+        <div id="events" class="events"><p class="muted">还没有任务。</p></div>
+      </section>
+
+      <section class="panel" id="answerPanel" hidden>
+        <h2>结果</h2>
+        <pre id="answer"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>历史</h2>
+        <ul id="history" class="history"><li class="muted">（空）</li></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

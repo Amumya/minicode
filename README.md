@@ -26,6 +26,7 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - 事件记录，跑完落成 JSON
 - 命令行入口：`minicode run "任务"` / `minicode serve`
 - HTTP 服务：提交任务返回 id，事件用 SSE 推，`curl` 就能看
+- 浏览器界面：提交任务、事件实时滚动、历史 run 可回放（TypeScript + Vite）
 - 沙箱评测：4 个任务，隐藏测试判定，防作弊有权限层和哈希比对两道
 - CI，Python 3.11 和 3.12 都跑
 
@@ -73,9 +74,9 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - [x] 沙箱任务集和判定器
 - [x] FastAPI 服务 + SSE 事件流
 - [x] Redis 存会话 + 断点续跑
+- [x] 前端页面（TypeScript + Vite，56 KB 产物）
 - [ ] 更难的任务（现在全过，测不出差异）
 - [ ] 上下文压缩
-- [ ] 前端页面
 
 ## 跑起来
 
@@ -91,6 +92,15 @@ python -m venv .venv
 ```powershell
 $env:PYTHONPATH = "src"
 .venv\Scripts\python.exe tests\run_tests.py
+```
+
+前端构建产物（`src/minicode/service/web/`）也一起提交了，所以 clone 下来不用装 npm
+就能直接看界面。要改前端源码：
+
+```powershell
+npm ci --prefix web
+npm --prefix web run build     # 产物直接吐到 src/minicode/service/web/
+npm --prefix web test          # 纯逻辑 + 接线检查，不需要浏览器
 ```
 
 ## 用一下
@@ -116,6 +126,9 @@ curl.exe -sN http://127.0.0.1:8765/runs/<上一步返回的 id>/events
 
 事件流长这样（`start` → `model_call` → `tool_call` → `model_call` → `finish` → `end`），
 每条 `data` 都是 JSON。
+
+浏览器打开 <http://127.0.0.1:8765/> 就是界面：写任务、点提交、事件一条条滚出来。
+历史里的 run 点一下可以回放（事件存在 store 里，所以能重放）。
 
 服务默认只监听 `127.0.0.1`。**它没有鉴权，别往公网开。**
 

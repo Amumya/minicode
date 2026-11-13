@@ -26,3 +26,24 @@ jobs:
 
       - name: Test (不需要 API key)
         run: pytest
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 能直接跑 .ts，所以前端测试不用先编译
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci --prefix web
+
+      - name: Type check
+        run: npx --prefix web tsc --noEmit -p web
+
+      - name: Test (纯逻辑 + 接线)
+        run: npm test --prefix web
