@@ -47,6 +47,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="不告诉 agent 该用哪个 Python 解释器（对照实验用）")
     r.add_argument("--compact", action="store_true",
                    help="开启上下文压缩（大工具输出落盘、旧结果截断、剪掉最早整对）")
+    r.add_argument("--subagent", action="store_true",
+                   help="挂上 task 工具，可以派子代理去做独立子任务（上下文隔离）")
+    r.add_argument("--subagent-steps", type=int, default=6,
+                   help="子代理的步数上限，默认 6")
 
     s = sub.add_parser("serve", help="起 HTTP 服务")
     s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
@@ -95,7 +99,19 @@ def cmd_run(args, provider_factory=None) -> int:
     compactor = Compactor(workspace, CompactConfig()) if args.compact else None
     skills_loader = SkillLoader(workspace / args.skills) if args.skills else None
     todo = TodoList() if args.plan else None
-    tools = build_registry(files=args.files, todo=todo, skills=skills_loader)
+
+    extra_tools = []
+    if args.subagent:
+        from minicode.subagent import TaskTool
+
+        extra_tools.append(TaskTool(
+            provider=provider,
+            settings=settings,
+            build_tools=lambda: build_registry(files=args.files),
+            max_steps=args.subagent_steps,
+        ))
+    tools = build_registry(files=args.files, todo=todo, skills=skills_loader,
+                           extra=extra_tools)
 
     rec = Recorder()
     started = time.time()
