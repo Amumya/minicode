@@ -78,6 +78,16 @@ def prepare(task: str) -> Path:
     ws.mkdir(parents=True)
     for sub in ("src", "tests"):
         shutil.copytree(src / sub, ws / sub)
+
+    # 任务根目录下的普通文件（SPEC.md 之类）也要进工作区，agent 才看得见
+    for extra in src.iterdir():
+        if extra.is_file() and extra.name != "task.txt":
+            shutil.copy2(extra, ws / extra.name)
+
+    # 让 `python -m pytest` 在工作区根目录就能跑通：
+    # 不写这个的话，测试里的 `from seq import ...` 找不到模块，
+    # agent 会先去折腾 sys.path，白烧几步（实测过）。
+    (ws / "pytest.ini").write_text("[pytest]\npythonpath = src\n", encoding="utf-8")
     return ws
 
 
@@ -86,21 +96,30 @@ def run_hidden(ws: Path, task: str) -> tuple[bool, str]:
     hidden_files = list((src / "hidden").glob("*.py"))
     if not hidden_files:
         return False, "没有隐藏测试"
+    # 拷进去时改名成 test_ 前缀：pytest 只认 test_*.py 这个模式，
+    # 直接放 hidden_*.py 即使显式传路径也可能被跳过（实测过）。
+    renamed = {}
     for f in hidden_files:
-        shutil.copy2(f, ws / "tests" / f.name)
+        target = ws / "tests" / f"test_{f.name}"
+        shutil.copy2(f, target)
+        renamed[f] = target
 
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ws / "src")
+    # 关键：隐藏测试的文件名是 hidden_*.py，不匹配 pytest 默认的 test_*.py 规则。
+    # 不带路径跑 `pytest -q` 只会收集到可见测试 —— 那样"隐藏测试判定"其实是假的，
+    # 实际只是在重跑可见测试。必须把隐藏文件显式列出来。
+    targets = ["tests"]
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider"],
+            [sys.executable, "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider", *targets],
             cwd=str(ws), capture_output=True, text=True, timeout=120, env=env,
+            encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
         return False, "判定超时"
     finally:
-        for f in hidden_files:
-            target = ws / "tests" / f.name
+        for target in renamed.values():
             if target.exists():
                 target.unlink()
 
@@ -155,7 +174,7 @@ def run_one(task: str, condition: str, provider, settings, repeat_idx: int,
         settings=settings,
         workspace=ws,
         recorder=rec,
-        system=default_system(shell_hint) + TASK_FRAME,
+        system=default_system(shell_hint=shell_hint, python_hint=sys.executable) + TASK_FRAME,
     )
     elapsed = time.time() - started
 

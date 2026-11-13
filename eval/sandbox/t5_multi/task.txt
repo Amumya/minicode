@@ -1,0 +1,5 @@
+有两个功能坏在 None 上：report.build 遇到 None 会抛 TypeError，summary.total 遇到 None 也会抛。要求：
+1) build 里 None 显示成 - ；
+2) total 里 None 当 0 算；
+3) 两个函数的签名都不要改；
+4) 其它情况保持原样。改完跑一下测试。
