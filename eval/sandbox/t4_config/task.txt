@@ -1,0 +1,2 @@
+config.py 里的默认配置要改两处：timeout 从 30 改成 60，retries 从 2 改成 3。
+其他键都不要动，尤其是 headers 里的中文说明。
