@@ -24,6 +24,7 @@ import os
 import re
 import shlex
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 
 # 判定结果里用稳定的原因码，不要用中文描述去比对（描述以后会改）
@@ -36,7 +37,18 @@ DENIED_DANGEROUS_TARGET = "dangerous_target"
 DENIED_SYSTEM_PATH_WRITE = "system_path_write"
 DENIED_OUTSIDE_WORKSPACE = "outside_workspace"
 DENIED_DESTRUCTIVE_GIT = "destructive_git"
+DENIED_PROTECTED_FILE = "protected_file"
 ALLOWED = "ok"
+
+# 测试文件不允许 agent 改。改测试等于自己给自己判卷。
+# 这条是防作弊的第一道防线，和评测层的隐藏测试配合使用。
+PROTECTED_NAME_PATTERNS = (
+    "test_*.py", "*_test.py", "conftest.py", "hidden_*.py", "check_*.py",
+)
+
+WRITE_TOOLS = ("write_file", "edit_file")
+FILE_TOOLS = ("read_file", "write_file", "edit_file")
+
 
 # 直接禁止的程序
 BANNED_PROGRAMS = {
@@ -107,6 +119,21 @@ def _strip_quotes(tok: str) -> str:
     return tok
 
 
+def _tokens_fallback(part: str) -> tuple[str, ...]:
+    """shlex 解析失败时的退路：按空白硬切。
+
+    真实轨迹里大量命令是 `python -c "..."` 这种带换行和嵌套引号的单行，
+    shlex 会直接抛 ValueError。如果一律当作"无法解析 → 拒绝"，
+    agent 会被莫名其妙地拦下来，白白浪费步数（实测每个任务被拒 2-3 次）。
+
+    退路不做引号解析，所以会把引号里的内容也当参数 —— 方向是**偏严**，
+    但至少能把 `rm -rf /` 这类显式危险命令认出来。
+    """
+    cleaned = part.replace("\\\n", " ")
+    raw = [t for t in re.split(r"\s+", cleaned) if t]
+    return tuple(_strip_quotes(t) for t in raw)
+
+
 def split_segments(command: str) -> list[list[Segment]]:
     """切成若干条"管道链"，每条链里再切成段。
 
@@ -123,8 +150,8 @@ def split_segments(command: str) -> list[list[Segment]]:
             try:
                 # posix=False：保留反斜杠，不然 Windows 路径会被吃掉
                 raw = shlex.split(part, posix=False)
-            except ValueError as exc:
-                raise ValueError(f"无法分词: {exc}") from exc
+            except ValueError:
+                raw = list(_tokens_fallback(part))
             tokens = tuple(_strip_quotes(t) for t in raw)
             if tokens:
                 segs.append(Segment(tokens))
@@ -278,16 +305,39 @@ class SubstringBlacklistJudge:
         return Verdict(True, ALLOWED)
 
 
+def _is_protected_path(path: str) -> bool:
+    name = os.path.basename(str(path).replace("\\", "/")).lower()
+    return any(fnmatch(name, pat) for pat in PROTECTED_NAME_PATTERNS)
+
+
 def judge_tool_call(
     tool_name: str, args: dict | None, workspace: Path | None = None
 ) -> Verdict | None:
     """把工具调用翻译成"要不要判"。返回 None 表示这个工具不需要判权限。
 
-    现在只有 bash 需要判 —— 它的参数里就是一条命令。
-    以后加了文件工具，写路径也要在这里判越界。
+    bash 判命令本身；文件工具判路径（越界、改测试文件）。
     """
+    workspace = (workspace or Path.cwd()).resolve()
+    args = args or {}
+
     if tool_name == "bash":
-        command = (args or {}).get("command", "")
-        return judge(str(command), workspace)
+        return judge(str(args.get("command", "")), workspace)
+
+    if tool_name in FILE_TOOLS:
+        rel = str(args.get("path", ""))
+        if not rel:
+            return Verdict(False, DENIED_OUTSIDE_WORKSPACE, "没有 path")
+        try:
+            target = Path(rel)
+            resolved = (target if target.is_absolute() else workspace / target).resolve()
+            resolved.relative_to(workspace)
+        except (ValueError, OSError):
+            return Verdict(False, DENIED_OUTSIDE_WORKSPACE, f"工作目录外: {rel}")
+
+        if tool_name in WRITE_TOOLS and _is_protected_path(rel):
+            return Verdict(False, DENIED_PROTECTED_FILE, f"不能改测试文件: {rel}")
+        return None
+
     return None
+
 

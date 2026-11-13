@@ -1,0 +1,1 @@
+counter.py 里的 count_words 数出来的词数不对，修好它。可以跑 tests 目录下的测试看看现在什么情况。
