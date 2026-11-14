@@ -265,6 +265,29 @@ def create_app(
             raise HTTPException(404, "没有这个 run")
         return state.to_dict(events=st.read_events(run_id) if events else None)
 
+    @app.get("/runs/{run_id}/tasks")
+    def get_run_tasks(run_id: str) -> dict:
+        """返回这次 run 的工作区里的任务图。
+
+        为什么不从事件里重建：create_task 的 ID 是在工具**结果**里才出现的，
+        按事件流反推容易错（模型可能没把 ID 抄对）。直接读任务目录最准。
+        """
+        state = st.get(run_id)
+        if state is None:
+            raise HTTPException(404, "没有这个 run")
+        if not state.tasks:
+            return {"enabled": False, "tasks": [], "progress": {"done": 0, "total": 0}}
+        store = TaskStore(Path(state.workspace) / ".minicode" / "tasks")
+        tasks = store.list()
+        return {
+            "enabled": True,
+            "tasks": [t.to_public() for t in tasks],
+            "progress": {
+                "done": sum(1 for t in tasks if t.status == "completed"),
+                "total": len(tasks),
+            },
+        }
+
     @app.get("/runs/{run_id}/events")
     async def stream_events(run_id: str) -> StreamingResponse:
         state = st.get(run_id)

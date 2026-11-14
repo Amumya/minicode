@@ -59,6 +59,15 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--compact-keep", type=int, default=3,
                    help="最近几个工具结果保留全文（默认 3）")
 
+    a = sub.add_parser("app", help="起服务并打开独立窗口（桌面壳）")
+    a.add_argument("--host", default="127.0.0.1")
+    a.add_argument("--port", type=int, default=8765)
+    a.add_argument("--workspace", type=Path, default=None)
+    a.add_argument("--browser", default=None, help="指定浏览器可执行文件")
+    a.add_argument("--dry-run", action="store_true", help="只打印会启动什么，不真起")
+    a.add_argument("--no-wait", action="store_true",
+                   help="不等窗口关闭（服务在后台继续跑）")
+
     s = sub.add_parser("serve", help="起 HTTP 服务")
     s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
     s.add_argument("--port", type=int, default=8080)
@@ -196,6 +205,22 @@ def cmd_run(args, provider_factory=None) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_app(args) -> int:
+    from minicode.app_shell import run_app
+    from minicode.service import create_app
+
+    app = create_app(default_workspace=args.workspace)
+    return run_app(
+        app,
+        host=args.host,
+        port=args.port,
+        workspace=args.workspace,
+        browser=args.browser,
+        dry_run=args.dry_run,
+        wait_window=not args.no_wait,
+    )
+
+
 def cmd_serve(args) -> int:
     try:
         import uvicorn
@@ -220,6 +245,8 @@ def main(argv: list[str] | None = None, provider_factory=None) -> int:
         return cmd_run(args, provider_factory=provider_factory)
     if args.command == "serve":
         return cmd_serve(args)
+    if args.command == "app":
+        return cmd_app(args)
     parser.print_help()
     return 2
 

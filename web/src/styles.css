@@ -206,3 +206,61 @@ pre {
   gap: 0.3rem;
   font-size: 0.85rem;
 }
+
+
+/* ---- 顶部花费汇总 ---- */
+.usage {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+}
+header .usage {
+  margin-left: auto;
+}
+
+/* ---- 行内布局小工具 ---- */
+.row.wrap { flex-wrap: wrap; row-gap: 0.5rem; }
+.row.between { justify-content: space-between; }
+.sep { width: 1px; height: 1.2rem; background: var(--border); }
+label.check { gap: 0.3rem; cursor: pointer; }
+select {
+  background: #0d1016; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.3rem 0.4rem; font: inherit;
+}
+button.ghost { background: none; border: 1px solid var(--border); color: var(--info); }
+
+/* ---- 计划面板 ---- */
+.plan { margin: 0; padding-left: 1.3rem; display: grid; gap: 0.25rem; }
+.plan-item.status-completed { color: var(--muted); text-decoration: line-through; }
+.plan-item.status-in_progress { color: var(--warn); }
+.blocked-by { margin-left: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+
+/* ---- 任务看板 ---- */
+.board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.6rem;
+}
+.task {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  background: #12151c;
+  font-size: 0.82rem;
+}
+.task.status-completed { border-left-color: var(--ok); opacity: 0.7; }
+.task.status-in_progress { border-left-color: var(--warn); }
+.task.status-pending { border-left-color: var(--info); }
+.task-head { display: flex; gap: 0.4rem; align-items: baseline; }
+.task-head code { color: var(--muted); font-size: 0.72rem; }
+.task-meta { margin-top: 0.25rem; color: var(--muted); font-size: 0.72rem; }
+
+/* ---- 事件筛选 ---- */
+.filters { display: flex; gap: 0.3rem; }
+.chip {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 999px; padding: 0.15rem 0.6rem; font-size: 0.75rem;
+}
+.chip.active { border-color: #3a486b; color: var(--text); background: #232c42; }
+.history li { display: flex; align-items: center; gap: 0.5rem; }
