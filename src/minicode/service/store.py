@@ -37,6 +37,7 @@ class RunState:
     plan: bool = False
     skills: bool = False
     compact: bool = False
+    tasks: bool = False
 
     def to_dict(self, events: list[dict] | None = None) -> dict:
         out = {
@@ -54,6 +55,7 @@ class RunState:
             "plan": self.plan,
             "skills": self.skills,
             "compact": self.compact,
+            "tasks": self.tasks,
         }
         if events is not None:
             out["events"] = events
@@ -173,6 +175,7 @@ class RedisStore:
             "plan": int(run.plan),
             "skills": int(run.skills),
             "compact": int(run.compact),
+            "tasks": int(run.tasks),
         })
         # 用自增序号当 zset 分数，不用 created_at：
         # 实测这台机器上 time.time() 连续三次返回同一个值，并列的分数会让
@@ -201,6 +204,7 @@ class RedisStore:
             plan=bool(int(data.get("plan", 0))),
             skills=bool(int(data.get("skills", 0))),
             compact=bool(int(data.get("compact", 0))),
+            tasks=bool(int(data.get("tasks", 0))),
         )
 
     def all(self) -> list[RunState]:

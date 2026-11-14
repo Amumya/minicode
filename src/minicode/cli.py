@@ -22,6 +22,7 @@ from minicode.events import Recorder
 from minicode.loop import run as run_loop
 from minicode.prompts import default_system
 from minicode.skills import SkillLoader
+from minicode.tasks import TaskStore
 from minicode.tools import TodoList, build_registry
 
 
@@ -51,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="挂上 task 工具，可以派子代理去做独立子任务（上下文隔离）")
     r.add_argument("--subagent-steps", type=int, default=6,
                    help="子代理的步数上限，默认 6")
+    r.add_argument("--tasks", action="store_true",
+                   help="挂上任务图工具（建/改/列/查/认领/完成），带依赖和环检测")
+    r.add_argument("--compact-max-chars", type=int, default=4000,
+                   help="单个工具结果超过多少字符就落盘（默认 4000）")
+    r.add_argument("--compact-keep", type=int, default=3,
+                   help="最近几个工具结果保留全文（默认 3）")
 
     s = sub.add_parser("serve", help="起 HTTP 服务")
     s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
@@ -96,7 +103,13 @@ def cmd_run(args, provider_factory=None) -> int:
         print(f"初始化模型客户端失败: {exc}", file=sys.stderr)
         return 2
 
-    compactor = Compactor(workspace, CompactConfig()) if args.compact else None
+    compactor = (
+        Compactor(workspace, CompactConfig(
+            max_tool_result_chars=args.compact_max_chars,
+            keep_recent_tool_results=args.compact_keep,
+        ))
+        if args.compact else None
+    )
     skills_loader = SkillLoader(workspace / args.skills) if args.skills else None
     todo = TodoList() if args.plan else None
 
@@ -110,8 +123,9 @@ def cmd_run(args, provider_factory=None) -> int:
             build_tools=lambda: build_registry(files=args.files),
             max_steps=args.subagent_steps,
         ))
+    task_store = TaskStore(workspace / ".minicode" / "tasks") if args.tasks else None
     tools = build_registry(files=args.files, todo=todo, skills=skills_loader,
-                           extra=extra_tools)
+                           tasks=task_store, extra=extra_tools)
 
     rec = Recorder()
     started = time.time()
