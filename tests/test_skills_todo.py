@@ -115,9 +115,9 @@ def test_todo_update_and_render(tmp_path):
         {"content": "跑测试"},
     ])
     assert ok
-    assert "- [x] 读代码" in text
-    assert "- [~] 改函数" in text
-    assert "- [ ] 跑测试" in text
+    assert "1. [x] 读代码" in text
+    assert "2. [~] 改函数" in text
+    assert "3. [ ] 跑测试" in text
     assert "1/3 完成" in text
     assert tool.run({"todos": []}, tmp_path).exit_code == 0
 
@@ -167,8 +167,120 @@ def test_todo_keeps_previous_on_invalid_update():
     todo.update([{"content": "原有"}])
     ok, _ = todo.update([{"content": ""}])
     assert not ok
-    assert todo.snapshot() == [{"content": "原有", "status": "pending"}]
+    assert todo.snapshot() == [{"content": "原有", "status": "pending", "blockedBy": []}]
 
 
 def test_status_marks_are_all_defined():
     assert set(STATUSES) == {"pending", "in_progress", "completed"}
+
+
+# ------------------------------------------------------------------ 依赖与环检测
+
+
+def test_todo_cycle_is_rejected():
+    """环不会报错，只会让计划永远开不了工 —— 必须在提交那一刻拦下。"""
+    ok, text = TodoList().update([
+        {"content": "A", "blockedBy": [2]},
+        {"content": "B", "blockedBy": [1]},
+    ])
+    assert not ok
+    assert "环" in text
+    assert "1 → 2 → 1" in text
+
+
+def test_todo_three_node_cycle_is_rejected():
+    ok, text = TodoList().update([
+        {"content": "A", "blockedBy": [3]},
+        {"content": "B", "blockedBy": [1]},
+        {"content": "C", "blockedBy": [2]},
+    ])
+    assert not ok
+    assert "环" in text
+
+
+def test_todo_self_dependency_rejected():
+    ok, text = TodoList().update([{"content": "A", "blockedBy": [1]}])
+    assert not ok
+    assert "不能依赖自己" in text
+
+
+def test_todo_dependency_out_of_range():
+    ok, text = TodoList().update([
+        {"content": "A"},
+        {"content": "B", "blockedBy": [5]},
+    ])
+    assert not ok
+    assert "不存在的编号" in text
+
+
+def test_todo_blocked_item_cannot_start():
+    ok, text = TodoList().update([
+        {"content": "A"},
+        {"content": "B", "status": "in_progress", "blockedBy": [1]},
+    ])
+    assert not ok
+    assert "未完成的前置" in text
+
+
+def test_todo_blocked_item_cannot_complete():
+    ok, text = TodoList().update([
+        {"content": "A"},
+        {"content": "B", "status": "completed", "blockedBy": [1]},
+    ])
+    assert not ok
+    assert "未完成的前置" in text
+
+
+def test_todo_pending_may_wait_on_others():
+    """pending 的条目可以等着别人 —— 这是计划的常态，不该被拒。"""
+    ok, _ = TodoList().update([
+        {"content": "A", "status": "in_progress"},
+        {"content": "B", "blockedBy": [1]},
+    ])
+    assert ok
+
+
+def test_todo_dependency_unlocks_after_complete():
+    todo = TodoList()
+    ok, _ = todo.update([
+        {"content": "A", "status": "completed"},
+        {"content": "B", "status": "in_progress", "blockedBy": [1]},
+    ])
+    assert ok
+
+
+def test_todo_render_shows_waiting():
+    todo = TodoList()
+    ok, text = todo.update([
+        {"content": "A", "status": "in_progress"},
+        {"content": "B", "blockedBy": [1]},
+        {"content": "C", "blockedBy": [1, 2]},
+    ])
+    assert ok
+    assert "← 等 [1]" in text
+    assert "← 等 [1, 2]" in text
+
+
+def test_todo_render_hides_waited_marker_when_done():
+    todo = TodoList()
+    ok, text = todo.update([
+        {"content": "A", "status": "completed"},
+        {"content": "B", "blockedBy": [1]},
+    ])
+    assert ok
+    assert "← 等" not in text
+
+
+def test_todo_snapshot_includes_blockers():
+    todo = TodoList()
+    todo.update([{"content": "A"}, {"content": "B", "blockedBy": [1]}])
+    assert todo.snapshot()[1]["blockedBy"] == [1]
+
+
+def test_todo_blocker_must_be_int():
+    ok, text = TodoList().update([
+        {"content": "A"},
+        {"content": "B", "blockedBy": ["1"]},
+    ])
+    assert not ok
+    assert "不是整数" in text

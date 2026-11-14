@@ -22,6 +22,7 @@ from minicode.events import Recorder
 from minicode.loop import run as run_loop
 from minicode.prompts import default_system
 from minicode.skills import SkillLoader
+from minicode.tasks import TaskStore
 from minicode.tools import TodoList, build_registry
 
 
@@ -51,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="挂上 task 工具，可以派子代理去做独立子任务（上下文隔离）")
     r.add_argument("--subagent-steps", type=int, default=6,
                    help="子代理的步数上限，默认 6")
+    r.add_argument("--tasks", action="store_true",
+                   help="挂上任务图工具（建/改/列/查/认领/完成），带依赖和环检测")
     r.add_argument("--compact-max-chars", type=int, default=4000,
                    help="单个工具结果超过多少字符就落盘（默认 4000）")
     r.add_argument("--compact-keep", type=int, default=3,
@@ -120,8 +123,9 @@ def cmd_run(args, provider_factory=None) -> int:
             build_tools=lambda: build_registry(files=args.files),
             max_steps=args.subagent_steps,
         ))
+    task_store = TaskStore(workspace / ".minicode" / "tasks") if args.tasks else None
     tools = build_registry(files=args.files, todo=todo, skills=skills_loader,
-                           extra=extra_tools)
+                           tasks=task_store, extra=extra_tools)
 
     rec = Recorder()
     started = time.time()

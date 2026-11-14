@@ -43,6 +43,7 @@ from minicode.events import Event, Recorder
 from minicode.loop import run as run_loop
 from minicode.prompts import default_system
 from minicode.skills import SkillLoader
+from minicode.tasks import TaskStore
 from minicode.service.store import (
     InMemoryStore,
     RedisStore,
@@ -68,6 +69,7 @@ class RunRequest(BaseModel):
     plan: bool = False
     skills: bool = False
     compact: bool = False
+    tasks: bool = False
 
 
 class ResumeRequest(BaseModel):
@@ -116,11 +118,15 @@ def create_app(
     def _skills_for(state: RunState) -> SkillLoader | None:
         return SkillLoader(Path(state.workspace) / "skills") if state.skills else None
 
+    def _tasks_for(state: RunState):
+        return TaskStore(Path(state.workspace) / ".minicode" / "tasks") if state.tasks else None
+
     def _tools_for(state: RunState):
         return build_registry(
             files=state.include_files,
             todo=TodoList() if state.plan else None,
             skills=_skills_for(state),
+            tasks=_tasks_for(state),
         )
 
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
@@ -144,7 +150,8 @@ def create_app(
                 state.task,
                 provider=_factory(run_settings),
                 tools=build_registry(
-                    files=state.include_files, todo=todo, skills=skills_loader),
+                    files=state.include_files, todo=todo,
+                    skills=skills_loader, tasks=_tasks_for(state)),
                 settings=run_settings,
                 workspace=Path(state.workspace),
                 recorder=rec,
@@ -217,6 +224,7 @@ def create_app(
             plan=req.plan,
             skills=req.skills,
             compact=req.compact,
+            tasks=req.tasks,
         )
         st.create(state)
         _start(state, run_settings, resume=None)
