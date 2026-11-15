@@ -123,7 +123,8 @@ def test_events_from_before_restart_are_still_streamable(tmp_path):
     assert text.count("event:") >= before
 
 
-def test_resume_409_when_no_checkpoint(tmp_path):
+def test_resume_409_when_already_done(tmp_path):
+    """跑完的 run 不该能 resume —— 那样会在没有新用户输入的情况下再调一次模型。"""
     fake = fakeredis.FakeRedis(decode_responses=True)
     store = RedisStore(client=fake)
     provider = SharedProvider([ModelReply(text="一次就好了", stop_reason="end_turn")])
@@ -134,7 +135,7 @@ def test_resume_409_when_no_checkpoint(tmp_path):
 
     resp = client.post(f"/runs/{run_id}/resume", json={})
     assert resp.status_code == 409
-    assert "检查点" in resp.json()["detail"]
+    assert "followup" in resp.json()["detail"]
 
 
 def test_resume_404_for_unknown_run(tmp_path):

@@ -135,6 +135,10 @@ def run(
 
         if not reply.tool_calls:
             rec.add("finish", step=step, ok=True, reason=reply.stop_reason)
+            # 正常收尾也要存一次检查点：多轮对话要靠它拿到"这一轮结束时完整的消息列表"。
+            # 不存的话，只有被中断的 run 才有检查点，完成后就没法接着聊了。
+            if on_step is not None:
+                on_step({"messages": messages, "step": step, "usage": usage_total})
             return RunResult(
                 ok=True,
                 final_text=reply.text,

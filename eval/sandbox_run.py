@@ -262,7 +262,7 @@ def run_one(task: str, condition: str, provider, settings, repeat_idx: int,
         "commands": [e.data.get("args", {}) for e in tool_ev],
         "calls": calls,
         "failure_kinds": kinds,
-        "workspace": str(ws.relative_to(ROOT)),
+        "workspace": (str(ws.relative_to(ROOT)) if ROOT in ws.parents else str(ws)),
     }
 
 

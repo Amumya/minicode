@@ -28,6 +28,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -70,6 +71,12 @@ class RunRequest(BaseModel):
     skills: bool = False
     compact: bool = False
     tasks: bool = False
+
+
+class FollowupRequest(BaseModel):
+    """多轮对话：在某个已结束的 run 后面接着说一句。"""
+    text: str
+    max_steps: int | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -237,6 +244,11 @@ def create_app(
             raise HTTPException(404, "没有这个 run")
         if state.status == "running":
             raise HTTPException(409, "这个 run 还在跑，不用恢复")
+        # done 有两种：正常收尾（result.ok=True）和步数耗尽被中断（ok=False）。
+        # 前者不该再 resume —— 会在没有新用户输入的情况下再调一次模型，要接着聊请用 followup；
+        # 后者正是 resume 的用途。
+        if state.status == "done" and (state.result or {}).get("ok"):
+            raise HTTPException(409, "这个 run 已经正常跑完了，要接着聊请用 followup 接口")
         checkpoint = st.get_checkpoint(run_id)
         if not checkpoint:
             raise HTTPException(409, "没有检查点，只能从头跑")
@@ -264,6 +276,69 @@ def create_app(
         if state is None:
             raise HTTPException(404, "没有这个 run")
         return state.to_dict(events=st.read_events(run_id) if events else None)
+
+    @app.get("/runs/{run_id}/tasks")
+    def get_run_tasks(run_id: str) -> dict:
+        """返回这次 run 的工作区里的任务图。
+
+        为什么不从事件里重建：create_task 的 ID 是在工具**结果**里才出现的，
+        按事件流反推容易错（模型可能没把 ID 抄对）。直接读任务目录最准。
+        """
+        state = st.get(run_id)
+        if state is None:
+            raise HTTPException(404, "没有这个 run")
+        if not state.tasks:
+            return {"enabled": False, "tasks": [], "progress": {"done": 0, "total": 0}}
+        store = TaskStore(Path(state.workspace) / ".minicode" / "tasks")
+        tasks = store.list()
+        return {
+            "enabled": True,
+            "tasks": [t.to_public() for t in tasks],
+            "progress": {
+                "done": sum(1 for t in tasks if t.status == "completed"),
+                "total": len(tasks),
+            },
+        }
+
+    @app.post("/runs/{run_id}/followup", status_code=202)
+    async def followup_run(run_id: str, req: FollowupRequest) -> dict:
+        """接着上一轮继续聊。
+
+        为什么用"起一个新 run"而不是在原 run 上改：事件流、历史、检查点都是按 run 存的，
+        起新 run 能直接复用整套机制，只需把上一轮结束时的 messages 作为起点，
+        再把新的一句话追加进去。父子关系记在 parent_id 上，历史里能看出是一条链。
+        """
+        parent = st.get(run_id)
+        if parent is None:
+            raise HTTPException(404, "没有这个 run")
+
+        text = (req.text or "").strip()
+        if not text:
+            raise HTTPException(400, "续聊的内容不能为空")
+
+        checkpoint = st.get_checkpoint(run_id)
+        if not checkpoint or not checkpoint.get("messages"):
+            raise HTTPException(409, "这个 run 还没有可续的对话记录（可能没跑完就被丢弃了）")
+
+        messages = list(checkpoint["messages"]) + [{"role": "user", "content": text}]
+        run_settings = _resolve_settings(parent.model, req.max_steps)
+
+        state = RunState(
+            id=uuid.uuid4().hex[:12],
+            task=text,
+            model=run_settings.model,
+            workspace=parent.workspace,
+            parent_id=parent.id,
+            include_files=parent.include_files,
+            plan=parent.plan,
+            skills=parent.skills,
+            compact=parent.compact,
+            tasks=parent.tasks,
+        )
+        st.create(state)
+        # step=0 表示"从第 1 步开始"，usage 清零：新的一轮单独计费
+        _start(state, run_settings, resume={"messages": messages, "step": 0, "usage": {}})
+        return {"id": state.id, "parent_id": parent.id, "status": state.status}
 
     @app.get("/runs/{run_id}/events")
     async def stream_events(run_id: str) -> StreamingResponse:
