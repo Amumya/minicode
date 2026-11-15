@@ -70,6 +70,17 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--mode", choices=("auto", "app", "window"), default="auto",
                    help="窗口模式：auto=先试 app，渲染不出来就降级到普通窗口")
 
+    d = sub.add_parser("dev", help="一键起开发环境（Redis + 服务，可选开窗口）")
+    d.add_argument("--host", default="127.0.0.1")
+    d.add_argument("--port", type=int, default=8765)
+    d.add_argument("--workspace", type=Path, default=None)
+    d.add_argument("--open", action="store_true", help="顺便打开窗口")
+    d.add_argument("--mode", choices=("auto", "app", "window"), default="auto")
+    d.add_argument("--build", action="store_true", help="启动前重新构建前端")
+    d.add_argument("--reload", action="store_true", help="改 Python 代码自动重载")
+    d.add_argument("--no-redis", action="store_true",
+                   help="不用 Redis（内存存储，进程退出后历史丢失）")
+
     s = sub.add_parser("serve", help="起 HTTP 服务")
     s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
     s.add_argument("--port", type=int, default=8080)
@@ -224,6 +235,84 @@ def cmd_app(args) -> int:
     )
 
 
+def _repo_root() -> Path:
+    """找仓库根目录（有 web/ 或 .tools/ 的那一层）。"""
+    here = Path(__file__).resolve().parents[2]
+    if (here / "web").is_dir() or (here / ".tools").is_dir():
+        return here
+    return Path.cwd()
+
+
+def cmd_dev(args) -> int:
+    """一键起开发环境。
+
+    做了四件事：可选构建前端 → 确保 Redis → 起服务 →（可选）开窗口。
+    Ctrl+C 的时候把自己起的 Redis 一起收掉，不留孤儿进程。
+    """
+    import uvicorn
+
+    from minicode import dev
+    from minicode.app_shell import run_app
+    from minicode.service import create_app
+
+    root = _repo_root()
+
+    # 端口被占用时给一句人话提示，而不是让 uvicorn 抛一屏 WinError 10048
+    from minicode.dev import port_open
+
+    if port_open(args.host, args.port):
+        print(f"端口 {args.port} 已经被占用了。")
+        print("  可能你之前的 minicode dev 还开着 —— 关掉那个窗口再试。")
+        print(f"  或者换个端口：minicode dev --port {args.port + 1}")
+        return 1
+
+    if args.build:
+        dev.build_frontend(root)
+
+    redis_proc, url = dev.ensure_redis(root, enabled=not args.no_redis)
+    dev.apply_env(url)
+    if url:
+        state = "（已在运行，直接复用）" if redis_proc is None else "（刚启动）"
+        print(f"Redis: {url} {state}")
+    else:
+        print("Redis: 没启用（用内存存储 —— 服务重启后历史会丢）")
+
+    app = create_app(default_workspace=args.workspace)
+    print(f"服务: http://{args.host}:{args.port}/")
+    if args.open:
+        print("按 Ctrl+C 结束（会一起收掉 Redis）")
+    else:
+        print("浏览器打开上面的地址；按 Ctrl+C 结束（会一起收掉 Redis）")
+
+    try:
+        if args.open:
+            return run_app(
+                app,
+                host=args.host,
+                port=args.port,
+                workspace=args.workspace,
+                mode=args.mode,
+            )
+
+        if args.reload:
+            # reload 需要一个 import 字符串，uvicorn 会在子进程里重建 app
+            uvicorn.run(
+                "minicode.service:create_app",
+                factory=True,
+                host=args.host,
+                port=args.port,
+                reload=True,
+                reload_dirs=[str(root / "src")],
+            )
+        else:
+            uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        dev.stop(redis_proc)
+
+
 def cmd_serve(args) -> int:
     try:
         import uvicorn
@@ -250,6 +339,8 @@ def main(argv: list[str] | None = None, provider_factory=None) -> int:
         return cmd_serve(args)
     if args.command == "app":
         return cmd_app(args)
+    if args.command == "dev":
+        return cmd_dev(args)
     parser.print_help()
     return 2
 

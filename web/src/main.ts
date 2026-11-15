@@ -71,7 +71,44 @@ let source: EventSource | null = null;
 let events: AgentEvent[] = [];
 let currentRunId = "";
 let currentRun: RunRow | null = null;
+
+/** 最近一次会话记在 localStorage 里。
+ *
+ * 为什么需要：界面上的"接着说"依赖内存里的 currentRun，一刷新就丢了 ——
+ * 用户看到的却是"我刚聊过，接着问一句"，结果变成新会话，模型失忆。
+ * 实测踩过：刷新后问"我叫什么名字"，模型答不上来。
+ */
+const LAST_RUN_KEY = "minicode:lastRun";
+
+function rememberRun(runId: string): void {
+  try {
+    window.localStorage.setItem(LAST_RUN_KEY, runId);
+  } catch {
+    /* 隐私模式下 localStorage 可能不可用，忽略 */
+  }
+}
+
+function forgetRun(): void {
+  try {
+    window.localStorage.removeItem(LAST_RUN_KEY);
+  } catch {
+    /* 同上 */
+  }
+}
+
+function restoreRunId(): string {
+  try {
+    return window.localStorage.getItem(LAST_RUN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
 let filter: EventFilter = "all";
+/** 任务看板刷新的防抖计时器。
+ *
+ * 为什么需要：一次 run 里 create/claim/complete 可能各调好几次，每调一次就拉一次
+ * /runs/{id}/tasks 太吵（日志里能看到连续十几行）。攒 250ms 只拉最后一次就够了。 */
+let boardTimer: ReturnType<typeof setTimeout> | null = null;
 
 function setStatus(text: string, tone: "muted" | "ok" | "error" = "muted"): void {
   statusEl.textContent = text;
@@ -167,6 +204,15 @@ function refreshDerived(): void {
   }
 }
 
+/** 250ms 防抖：连续的任务工具调用只触发一次看板刷新。 */
+function scheduleBoardRefresh(runId: string): void {
+  if (boardTimer) clearTimeout(boardTimer);
+  boardTimer = setTimeout(() => {
+    boardTimer = null;
+    void refreshBoard(runId);
+  }, 250);
+}
+
 async function refreshBoard(runId: string): Promise<void> {
   try {
     const resp = await fetch(`/runs/${runId}/tasks`);
@@ -242,11 +288,12 @@ function updateChatMode(): void {
   submitEl.textContent = chatting ? "接着说" : "提交";
 }
 
-function subscribe(runId: string): void {
+function subscribe(runId: string, knownRun: RunRow | null = null): void {
   source?.close();
   events = [];
   currentRunId = runId;
-  currentRun = null;
+  currentRun = knownRun;
+  rememberRun(runId);
   eventsEl.replaceChildren();
   answerPanel.hidden = true;
   planPanel.hidden = true;
@@ -271,7 +318,7 @@ function subscribe(runId: string): void {
       // 任务图变了就去拉一次看板（create/claim/complete 都会改状态）
       const d = (ev.data ?? {}) as Record<string, unknown>;
       if (ev.kind === "tool_call" && typeof d.tool === "string" && d.tool.endsWith("_task")) {
-        void refreshBoard(runId);
+        scheduleBoardRefresh(runId);
       }
 
       if (kind === "end") {
@@ -286,6 +333,7 @@ function subscribe(runId: string): void {
         showAnswer(ev.data);
         updateResumeButton();
         updateChatMode();
+        rememberRun(runId);
         void refreshBoard(runId);
         setStatus(`run ${runId} 结束`, "ok");
         void loadHistory();
@@ -429,6 +477,7 @@ function newChat(): void {
   boardPanel.hidden = true;
   usageEl.textContent = "";
   taskEl.value = "";
+  forgetRun();
   updateChatMode();
   setStatus("新会话");
 }
@@ -475,5 +524,31 @@ filtersEl.addEventListener("click", (e) => {
   renderEvents();
 });
 
+/** 页面加载时恢复上次会话：把最近一次 run 拉回来，事件回放一遍，
+ * 这样刷新之后直接输入下一句话仍然是"接着说"。 */
+async function restoreLastRun(): Promise<void> {
+  const runId = restoreRunId();
+  if (!runId) return;
+  try {
+    const resp = await fetch(`/runs/${runId}`);
+    if (!resp.ok) {
+      forgetRun();
+      return;
+    }
+    const run = (await resp.json()) as RunRow;
+    if (!canFollowup(run) && !canResume(run)) {
+      // 上次那个还在跑或者状态异常：不要把"接着说"挂在一个不存在的会话上
+      forgetRun();
+      return;
+    }
+    subscribe(runId, run);
+    updateChatMode();
+    setStatus(`已恢复上次会话（${runId}），直接输入就是接着说`);
+  } catch {
+    forgetRun();
+  }
+}
+
 void loadHealth();
 void loadHistory();
+void restoreLastRun();

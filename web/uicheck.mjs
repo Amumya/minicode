@@ -46,7 +46,12 @@ const vc = new VirtualConsole();
 vc.on("jsdomError", (e) => errors.push("jsdom: " + e.message));
 vc.on("error", (...a) => errors.push("console.error: " + a.join(" ")));
 
-const dom = new JSDOM(html, { runScripts: "outside-only", virtualConsole: vc });
+// 必须给一个真实的 url：about:blank 是不透明源，localStorage 会直接抛异常
+const dom = new JSDOM(html, {
+  runScripts: "outside-only",
+  virtualConsole: vc,
+  url: "http://127.0.0.1:8765/",
+});
 const { window } = dom;
 
 const calls = [];
@@ -65,6 +70,12 @@ window.fetch = async (url, opts) => {
     ] });
   }
   if (url === "/runs" && opts?.method === "POST") return reply({ id: "stub-run" });
+  if (url === "/runs/prev-run") {
+    return reply({
+      id: "prev-run", task: "刷新前的会话", status: "done", event_count: 3,
+      result: { ok: true }, parent_id: null,
+    });
+  }
   if (url.endsWith("/tasks")) {
     return reply({
       enabled: true,
@@ -100,6 +111,9 @@ class StubEventSource {
 }
 window.EventSource = StubEventSource;
 
+// 模拟"刷新前聊过一次"：localStorage 里记着上次的 run id
+window.localStorage.setItem("minicode:lastRun", "prev-run");
+
 try {
   window.eval(bundle);
 } catch (e) {
@@ -118,6 +132,24 @@ check("页面加载会拉后端状态", doc.querySelector("#store").textContent.
   doc.querySelector("#store").textContent);
 check("历史里给未完成的 run 显示「继续」",
   [...doc.querySelectorAll("#history button")].some((b) => b.textContent === "继续"));
+
+// ---- 刷新后恢复上次会话 ----
+check("刷新后能恢复上次会话（按钮变「接着说」）",
+  doc.querySelector("#submit").textContent === "接着说",
+  doc.querySelector("#submit").textContent);
+check("恢复后会提示已恢复", doc.querySelector("#status").textContent.includes("已恢复"),
+  doc.querySelector("#status").textContent);
+
+// 恢复之后直接输入 → 应该就是接着上次那轮说
+doc.querySelector("#task").value = "接着问一句";
+doc.querySelector("#submit").click();
+await sleep(80);
+check("恢复后直接提交走 followup",
+  calls.some((c) => c === "POST /runs/prev-run/followup"), calls.slice(-2).join(" | "));
+
+// 后面测试新会话流程，先断开
+doc.querySelector("#newChat").click();
+await sleep(30);
 
 // ---- 提交 ----
 doc.querySelector("#task").value = "stub 任务";
@@ -155,12 +187,18 @@ check("计划显示进度", doc.querySelector("#planProgress").textContent.inclu
 check("计划显示依赖", doc.querySelector("#plan").textContent.includes("等 1"),
   doc.querySelector("#plan").textContent.slice(0, 60));
 
-// 任务看板：触发一次任务工具调用后前端会去拉 /tasks
-es.emit("tool_call", {
-  kind: "tool_call", ts,
-  data: { step: 2, tool: "create_task", args: { subject: "跑测试" }, exit_code: 0, failed: false },
-});
-await sleep(60);
+// 任务看板：连续三次任务工具调用，前端应该**只拉一次** /tasks（250ms 防抖）
+const tasksBefore = calls.filter((c) => c.endsWith("/tasks")).length;
+for (const tool of ["create_task", "claim_task", "complete_task"]) {
+  es.emit("tool_call", {
+    kind: "tool_call", ts,
+    data: { step: 2, tool, args: { subject: "跑测试" }, exit_code: 0, failed: false },
+  });
+}
+await sleep(450);
+const tasksAfter = calls.filter((c) => c.endsWith("/tasks")).length;
+check("任务工具连调 3 次只拉一次看板（防抖）", tasksAfter - tasksBefore === 1,
+  `调了 ${tasksAfter - tasksBefore} 次`);
 check("任务看板出现", doc.querySelector("#boardPanel").hidden === false);
 check("看板显示三条任务", doc.querySelectorAll("#board .task").length === 3,
   `${doc.querySelectorAll("#board .task").length} 张卡`);
