@@ -1,37 +1,51 @@
+/**
+ * 界面接线：左栏（工作区 + 历史会话）+ 右侧对话流。
+ *
+ * 分层：纯逻辑在 chat.ts / derive.ts / format.ts（都有单测），
+ * 接口在 api.ts，这里只负责"把状态画到 DOM 上"和"把用户操作变成请求"。
+ */
+
 import "./styles.css";
-import { describeEvent, formatTime, summarizeResult, type AgentEvent } from "./format.ts";
 import {
-  buildTaskBoard,
-  canFollowup,
-  canResume,
-  filterEvents,
-  formatUsage,
-  latestPlan,
-  planProgress,
-  summarizeUsage,
-  type EventFilter,
-  type TaskItem,
-} from "./derive.ts";
+  api,
+  subscribeRun,
+  type Conversation,
+  type RunRow,
+  type Workspace,
+} from "./api.ts";
+import {
+  buildTurns,
+  groupByDay,
+  shortTitle,
+  statusTone,
+  type Turn,
+} from "./chat.ts";
+import { describeEvent } from "./format.ts";
+import { buildTaskBoard, formatUsage } from "./derive.ts";
+import type { AgentEvent } from "./format.ts";
 
-const KINDS = [
-  "start",
-  "resume",
-  "model_call",
-  "tool_call",
-  "denied",
-  "unknown_tool",
-  "hook_error",
-  "compact",
-  "finish",
-  "end",
-] as const;
+/* ------------------------------------------------------------------ 小工具 */
 
-interface RunRow {
-  id: string;
-  task: string;
-  status: string;
-  event_count: number;
-  result?: Record<string, unknown> | null;
+type Child = Node | string | null | undefined | false;
+
+function h<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  props: Partial<HTMLElementTagNameMap[K]> & { class?: string; dataset?: Record<string, string> } = {},
+  ...children: Child[]
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (value === undefined || value === null) continue;
+    if (key === "class") node.className = String(value);
+    else if (key === "dataset") Object.assign(node.dataset, value);
+    else if (key === "hidden") node.hidden = Boolean(value);
+    else (node as unknown as Record<string, unknown>)[key] = value;
+  }
+  for (const child of children) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(typeof child === "string" ? document.createTextNode(child) : child);
+  }
+  return node;
 }
 
 function el<T extends HTMLElement>(id: string): T {
@@ -40,515 +54,629 @@ function el<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
-const taskEl = el<HTMLTextAreaElement>("task");
-const modelEl = el<HTMLSelectElement>("model");
-const maxStepsEl = el<HTMLInputElement>("maxSteps");
-const optFiles = el<HTMLInputElement>("optFiles");
-const optPlan = el<HTMLInputElement>("optPlan");
-const optSkills = el<HTMLInputElement>("optSkills");
-const optCompact = el<HTMLInputElement>("optCompact");
-const optTasks = el<HTMLInputElement>("optTasks");
-const submitEl = el<HTMLButtonElement>("submit");
-const newChatEl = el<HTMLButtonElement>("newChat");
-const statusEl = el<HTMLSpanElement>("status");
-const usageEl = el<HTMLSpanElement>("usage");
-const eventsEl = el<HTMLDivElement>("events");
-const filtersEl = el<HTMLDivElement>("filters");
-const answerPanel = el<HTMLElement>("answerPanel");
-const answerEl = el<HTMLElement>("answer");
-const answerMetaEl = el<HTMLElement>("answerMeta");
-const resumeEl = el<HTMLButtonElement>("resume");
-const planPanel = el<HTMLElement>("planPanel");
-const planEl = el<HTMLOListElement>("plan");
-const planProgressEl = el<HTMLSpanElement>("planProgress");
-const boardPanel = el<HTMLElement>("boardPanel");
-const boardEl = el<HTMLDivElement>("board");
-const boardProgressEl = el<HTMLSpanElement>("boardProgress");
-const historyEl = el<HTMLUListElement>("history");
-const storeEl = el<HTMLSpanElement>("store");
+const LAST_CONVERSATION_KEY = "minicode:conversation";
+const LAST_WORKSPACE_KEY = "minicode:workspace";
 
-let source: EventSource | null = null;
-let events: AgentEvent[] = [];
-let currentRunId = "";
-let currentRun: RunRow | null = null;
-
-/** 最近一次会话记在 localStorage 里。
- *
- * 为什么需要：界面上的"接着说"依赖内存里的 currentRun，一刷新就丢了 ——
- * 用户看到的却是"我刚聊过，接着问一句"，结果变成新会话，模型失忆。
- * 实测踩过：刷新后问"我叫什么名字"，模型答不上来。
- */
-const LAST_RUN_KEY = "minicode:lastRun";
-
-function rememberRun(runId: string): void {
+function remember(key: string, value: string): void {
   try {
-    window.localStorage.setItem(LAST_RUN_KEY, runId);
+    window.localStorage.setItem(key, value);
   } catch {
-    /* 隐私模式下 localStorage 可能不可用，忽略 */
+    /* 隐私模式不可用，忽略 */
   }
 }
-
-function forgetRun(): void {
+function recall(key: string): string {
   try {
-    window.localStorage.removeItem(LAST_RUN_KEY);
-  } catch {
-    /* 同上 */
-  }
-}
-
-function restoreRunId(): string {
-  try {
-    return window.localStorage.getItem(LAST_RUN_KEY) ?? "";
+    return window.localStorage.getItem(key) ?? "";
   } catch {
     return "";
   }
 }
-let filter: EventFilter = "all";
-/** 任务看板刷新的防抖计时器。
- *
- * 为什么需要：一次 run 里 create/claim/complete 可能各调好几次，每调一次就拉一次
- * /runs/{id}/tasks 太吵（日志里能看到连续十几行）。攒 250ms 只拉最后一次就够了。 */
-let boardTimer: ReturnType<typeof setTimeout> | null = null;
+function forget(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ------------------------------------------------------------------ DOM */
+
+const sidebar = {
+  workspace: el<HTMLSelectElement>("workspace"),
+  custom: el<HTMLInputElement>("workspaceCustom"),
+  refresh: el<HTMLButtonElement>("refreshWs"),
+  newChat: el<HTMLButtonElement>("newChat"),
+  conversations: el<HTMLElement>("conversations"),
+  store: el<HTMLElement>("storeInfo"),
+};
+
+const main = {
+  title: el<HTMLElement>("title"),
+  status: el<HTMLElement>("runStatus"),
+  usage: el<HTMLElement>("usage"),
+  chat: el<HTMLElement>("chat"),
+  empty: el<HTMLElement>("empty"),
+  task: el<HTMLTextAreaElement>("task"),
+  submit: el<HTMLButtonElement>("submit"),
+  resume: el<HTMLButtonElement>("resume"),
+  statusLine: el<HTMLElement>("status"),
+  model: el<HTMLSelectElement>("model"),
+  maxSteps: el<HTMLInputElement>("maxSteps"),
+  optFiles: el<HTMLInputElement>("optFiles"),
+  optPlan: el<HTMLInputElement>("optPlan"),
+  optSkills: el<HTMLInputElement>("optSkills"),
+  optCompact: el<HTMLInputElement>("optCompact"),
+  optTasks: el<HTMLInputElement>("optTasks"),
+};
+
+/* ------------------------------------------------------------------ 展开状态
+
+为什么需要：每次事件都会重画整个对话区，<details> 的 open 状态会被重建掉。
+用户展开"过程"想看细节，来了一条新事件就被关回去 —— 很烦。
+把展开状态按"轮次+区块"记在内存里，重画后恢复。
+*/
+
+const openDetails = new Set<string>();
+
+function detailsBlock(
+  key: string,
+  cls: string,
+  summaryText: string,
+  build: () => HTMLElement | null,
+): HTMLElement {
+  const node = h("details", { class: cls });
+  node.open = openDetails.has(key);
+  node.addEventListener("toggle", () => {
+    if (node.open) openDetails.add(key);
+    else openDetails.delete(key);
+  });
+  node.append(h("summary", {}, summaryText));
+  const body = build();
+  if (body) node.append(body);
+  return node;
+}
+
+/* ------------------------------------------------------------------ 状态 */
+
+let workspaces: Workspace[] = [];
+let conversations: Conversation[] = [];
+/** 当前会话的所有 run（按时间排好），live run 也在里面 */
+let runs: RunRow[] = [];
+let conversationRoot = "";
+/** 正在流式接收的那个 run */
+let liveRun: RunRow | null = null;
+let liveEvents: AgentEvent[] = [];
+let closeStream: (() => void) | null = null;
+let renderQueued = false;
+
+function currentConversation(): Conversation | null {
+  return conversations.find((c) => c.root_id === conversationRoot) ?? null;
+}
+
+function selectedWorkspace(): string {
+  const custom = sidebar.custom.value.trim();
+  if (custom) return custom;
+  return sidebar.workspace.value;
+}
 
 function setStatus(text: string, tone: "muted" | "ok" | "error" = "muted"): void {
-  statusEl.textContent = text;
-  statusEl.className = tone === "muted" ? "muted" : tone;
+  main.statusLine.textContent = text;
+  main.statusLine.className = tone === "muted" ? "muted" : tone;
 }
 
-/* ------------------------------------------------------------------ 事件区 */
+function isBusy(): boolean {
+  return runs.some((r) => r.status === "running" || r.status === "queued");
+}
 
-function renderEvents(): void {
-  const visible = filterEvents(events, filter);
-  eventsEl.replaceChildren();
-  if (visible.length === 0) {
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = events.length ? "当前筛选下没有事件。" : "还没有任务。";
-    eventsEl.append(p);
+/* ------------------------------------------------------------------ 左栏 */
+
+function renderWorkspaces(): void {
+  sidebar.workspace.replaceChildren();
+  for (const ws of workspaces) {
+    const option = h("option", { value: ws.path });
+    option.textContent = `${ws.name}${ws.is_default ? "（默认）" : ""}${ws.exists ? "" : "（不存在）"}`;
+    option.title = ws.path;
+    sidebar.workspace.append(option);
+  }
+  const saved = recall(LAST_WORKSPACE_KEY);
+  const pick = workspaces.find((w) => w.path === saved) ?? workspaces.find((w) => w.is_default) ?? workspaces[0];
+  if (pick) sidebar.workspace.value = pick.path;
+}
+
+function renderConversations(): void {
+  sidebar.conversations.replaceChildren();
+  if (conversations.length === 0) {
+    sidebar.conversations.append(h("p", { class: "muted hint" }, "还没有会话"));
     return;
   }
-  for (const ev of visible) {
-    const d = describeEvent(ev);
-    const row = document.createElement("div");
-    row.className = `event tone-${d.tone}`;
-
-    const time = document.createElement("span");
-    time.className = "time";
-    time.textContent = formatTime(ev.ts);
-
-    const label = document.createElement("span");
-    label.className = "label";
-    label.textContent = d.label;
-
-    const detail = document.createElement("span");
-    detail.className = "detail";
-    detail.textContent = d.detail;
-
-    row.append(time, label, detail);
-    eventsEl.append(row);
+  for (const group of groupByDay(conversations)) {
+    sidebar.conversations.append(h("div", { class: "group-label" }, group.label));
+    for (const conv of group.items) {
+      const item = h("button", { class: "conv", dataset: { root: conv.root_id } });
+      if (conv.root_id === conversationRoot) {
+        item.classList.add("active");
+        item.setAttribute("aria-current", "true");
+      }
+      const tone = statusTone(conv.status);
+      const dot = h("span", { class: `dot tone-${tone}` });
+      dot.setAttribute("aria-label", `状态：${conv.status}`);
+      const title = h("span", { class: "conv-title" }, shortTitle(conv.title));
+      const meta = h("span", { class: "conv-meta" }, conv.turns && conv.turns > 1 ? `${conv.turns} 轮` : "");
+      item.append(dot, title, meta);
+      item.title = conv.title;
+      item.addEventListener("click", () => void openConversation(conv.root_id));
+      sidebar.conversations.append(item);
+    }
   }
-  eventsEl.scrollTop = eventsEl.scrollHeight;
 }
 
-function addEvent(ev: AgentEvent): void {
-  events.push(ev);
-  // 只对新事件做追加，避免每次重画整屏（长任务里事件可能上百条）
-  if (filter === "all" || filterEvents([ev], filter).length > 0) {
-    const d = describeEvent(ev);
-    const row = document.createElement("div");
-    row.className = `event tone-${d.tone}`;
-    const time = document.createElement("span");
-    time.className = "time";
-    time.textContent = formatTime(ev.ts);
-    const label = document.createElement("span");
-    label.className = "label";
-    label.textContent = d.label;
-    const detail = document.createElement("span");
-    detail.className = "detail";
-    detail.textContent = d.detail;
-    row.append(time, label, detail);
-    if (eventsEl.firstElementChild?.tagName === "P") eventsEl.replaceChildren();
-    eventsEl.append(row);
-    eventsEl.scrollTop = eventsEl.scrollHeight;
-  }
-  refreshDerived();
+/* ------------------------------------------------------------------ 对话区 */
+
+function renderTools(turn: Turn, live: boolean): HTMLElement | null {
+  if (turn.tools.length === 0 && turn.denied === 0) return null;
+  const failed = turn.tools.filter((t) => !t.ok).length;
+  const text =
+    `过程：工具 ${turn.tools.length} 次` +
+    (failed ? `（失败 ${failed}）` : "") +
+    (turn.denied ? ` · 被拒 ${turn.denied}` : "");
+  return detailsBlock(`${turn.runId}:tools`, "process", text, () => {
+    const list = h("ul", { class: "tool-list" });
+    for (const tool of turn.tools) {
+      const li = h("li", { class: tool.ok ? "tool" : "tool failed" });
+      li.append(h("code", { class: "tool-name" }, tool.tool));
+      li.append(h("span", { class: "tool-summary" }, tool.summary || "（无参数摘要）"));
+      list.append(li);
+    }
+    if (live) list.append(h("li", { class: "muted" }, "…还在跑"));
+    return list;
+  });
 }
 
-/* ------------------------------------------------------------------ 派生面板 */
-
-function refreshDerived(): void {
-  const usage = summarizeUsage(events);
-  usageEl.textContent = usage.steps ? formatUsage(usage) : "";
-  answerMetaEl.textContent = usage.steps ? formatUsage(usage) : "";
-
-  const plan = latestPlan(events);
-  if (plan && plan.length) {
-    const prog = planProgress(plan);
-    planPanel.hidden = false;
-    planProgressEl.textContent = `${prog.done}/${prog.total} 完成`;
-    planEl.replaceChildren();
-    for (const item of plan) {
-      const li = document.createElement("li");
-      li.className = `plan-item status-${item.status}`;
+function renderPlan(turn: Turn): HTMLElement | null {
+  if (!turn.plan || turn.plan.length === 0) return null;
+  const done = turn.plan.filter((p) => p.status === "completed").length;
+  return detailsBlock(`${turn.runId}:plan`, "plan", `计划：${done}/${turn.plan.length} 完成`, () => {
+    const ol = h("ol", { class: "plan-list" });
+    for (const item of turn.plan ?? []) {
+      const li = h("li", { class: `plan-item status-${item.status}` });
       li.textContent = item.content;
       if (item.blockedBy?.length) {
-        const tag = document.createElement("span");
-        tag.className = "blocked-by";
-        tag.textContent = `等 ${item.blockedBy.join(",")}`;
-        li.append(tag);
+        li.append(h("span", { class: "blocked-by" }, `等 ${item.blockedBy.join(",")}`));
       }
-      planEl.append(li);
+      ol.append(li);
+    }
+    return ol;
+  });
+}
+
+/** 任务图看板：展开时才去拉数据（历史会话不会白拉一堆 /tasks）。 */
+function renderBoard(turn: Turn): HTMLElement | null {
+  // 只有"这个 run 启用了任务图且用过"才显示；是否启用以接口返回为准
+  return detailsBlock(`${turn.runId}:board`, "board", "任务看板", () => {
+    const body = h("div", { class: "board-body" }, "加载中…");
+    void (async () => {
+      try {
+        const data = await api.runTasks(turn.runId);
+        if (!data.enabled || data.tasks.length === 0) {
+          body.textContent = "这次没有启用任务图";
+          return;
+        }
+        const board = buildTaskBoard(data.tasks);
+        body.replaceChildren();
+        body.append(
+          h("div", { class: "board-meta muted" },
+            `${data.progress.done}/${data.progress.total} 完成 · ` +
+            `可开工 ${board.ready.length} · 阻塞 ${board.blocked.length}`),
+        );
+        const grid = h("div", { class: "board-grid" });
+        for (const task of data.tasks) {
+          const card = h("div", { class: `task-card status-${task.status}` });
+          card.append(h("code", { class: "task-id" }, task.id.replace("task_", "")));
+          card.append(h("span", { class: "task-subject" }, task.subject));
+          const waiting = (task.blockedBy ?? []).filter((dep) => {
+            const found = data.tasks.find((x) => x.id === dep);
+            return !found || found.status !== "completed";
+          });
+          card.append(
+            h("span", { class: "task-meta muted" },
+              [task.status, task.owner ? `owner ${task.owner}` : "",
+               waiting.length ? `等 ${waiting.map((w) => w.replace("task_", "")).join(",")}` : ""]
+                .filter(Boolean).join(" · ")),
+          );
+          grid.append(card);
+        }
+        body.append(grid);
+      } catch {
+        body.textContent = "任务看板拉取失败";
+      }
+    })();
+    return body;
+  });
+}
+
+function renderRawEvents(runId: string, events: AgentEvent[]): HTMLElement | null {
+  if (events.length === 0) return null;
+  return detailsBlock(`${runId}:raw`, "raw", `原始事件：${events.length} 条`, () => {
+    const list = h("div", { class: "event-list" });
+    for (const ev of events) {
+      const d = describeEvent(ev);
+      const row = h("div", { class: `event tone-${d.tone}` });
+      row.append(h("span", { class: "event-label" }, d.label));
+      row.append(h("span", { class: "event-detail" }, d.detail));
+      list.append(row);
+    }
+    return list;
+  });
+}
+
+function renderTurn(turn: Turn, events: AgentEvent[], live: boolean): HTMLElement {
+  const wrap = h("div", { class: `turn${live ? " live" : ""}` });
+
+  const user = h("div", { class: "msg user" });
+  user.append(h("div", { class: "avatar" }, "你"));
+  user.append(h("div", { class: "bubble" }, turn.task));
+  wrap.append(user);
+
+  const assistant = h("div", { class: "msg assistant" });
+  assistant.append(h("div", { class: "avatar" }, "m"));
+  const bubble = h("div", { class: "bubble" });
+
+  if (turn.error) {
+    bubble.append(h("div", { class: "answer error" }, `出错：${turn.error}`));
+  } else if (turn.answer) {
+    bubble.append(h("div", { class: "answer" }, turn.answer));
+  } else if (live || turn.status === "running" || turn.status === "queued") {
+    bubble.append(h("div", { class: "answer thinking" }, "运行中…"));
+  } else if (!turn.ok && turn.status === "error") {
+    bubble.append(h("div", { class: "answer error" }, "运行出错（详情看下面的事件）"));
+  } else if (!turn.ok && turn.status === "done") {
+    bubble.append(h("div", { class: "answer muted" }, "没跑完（步数用尽或中断）"));
+  }
+
+  const plan = renderPlan(turn);
+  if (plan) bubble.append(plan);
+  const tools = renderTools(turn, live);
+  if (tools) bubble.append(tools);
+  const board = renderBoard(turn);
+  if (board) bubble.append(board);
+  const raw = renderRawEvents(turn.runId, events);
+  if (raw) bubble.append(raw);
+
+  if (turn.usage.steps > 0) {
+    bubble.append(h("div", { class: "turn-usage muted" }, formatUsage(turn.usage)));
+  }
+
+  assistant.append(bubble);
+  wrap.append(assistant);
+  return wrap;
+}
+
+function renderChat(): void {
+  renderQueued = false;
+  const turns = buildTurns(runs);
+  main.chat.replaceChildren();
+  const hasContent = turns.length > 0 || liveRun !== null;
+  if (hasContent) {
+    main.empty.hidden = true;
+    for (const turn of turns) {
+      const run = runs.find((r) => r.id === turn.runId);
+      const isLive = liveRun?.id === turn.runId;
+      const events = isLive ? liveEvents : (run?.events ?? []);
+      main.chat.append(renderTurn(turn, events, isLive));
     }
   } else {
-    planPanel.hidden = true;
-  }
-}
-
-/** 250ms 防抖：连续的任务工具调用只触发一次看板刷新。 */
-function scheduleBoardRefresh(runId: string): void {
-  if (boardTimer) clearTimeout(boardTimer);
-  boardTimer = setTimeout(() => {
-    boardTimer = null;
-    void refreshBoard(runId);
-  }, 250);
-}
-
-async function refreshBoard(runId: string): Promise<void> {
-  try {
-    const resp = await fetch(`/runs/${runId}/tasks`);
-    if (!resp.ok) return;
-    const data = (await resp.json()) as {
-      enabled: boolean;
-      tasks: TaskItem[];
-      progress: { done: number; total: number };
-    };
-    if (!data.enabled || !data.tasks?.length) {
-      boardPanel.hidden = true;
-      return;
-    }
-    const board = buildTaskBoard(data.tasks);
-    boardPanel.hidden = false;
-    boardProgressEl.textContent =
-      `${data.progress.done}/${data.progress.total} 完成 · ` +
-      `可开工 ${board.ready.length} · 阻塞 ${board.blocked.length}`;
-    boardEl.replaceChildren();
-    for (const t of data.tasks) {
-      const card = document.createElement("div");
-      card.className = `task status-${t.status}`;
-      const head = document.createElement("div");
-      head.className = "task-head";
-      const id = document.createElement("code");
-      id.textContent = t.id.replace("task_", "");
-      const subj = document.createElement("span");
-      subj.textContent = t.subject;
-      head.append(id, subj);
-      card.append(head);
-      const meta = document.createElement("div");
-      meta.className = "task-meta";
-      const waiting = (t.blockedBy ?? []).filter((dep) => {
-        const d = data.tasks.find((x) => x.id === dep);
-        return !d || d.status !== "completed";
-      });
-      meta.textContent = [
-        t.status,
-        t.owner ? `owner ${t.owner}` : "",
-        waiting.length ? `等 ${waiting.map((w) => w.replace("task_", "")).join(",")}` : "",
-      ].filter(Boolean).join(" · ");
-      card.append(meta);
-      boardEl.append(card);
-    }
-  } catch {
-    boardPanel.hidden = true;
-  }
-}
-
-/* ------------------------------------------------------------------ 订阅 */
-
-function showAnswer(payload: Record<string, unknown> | undefined): void {
-  const p = payload ?? {};
-  answerEl.textContent =
-    p.status === "error"
-      ? `出错：${String(p.error ?? "未知错误")}`
-      : summarizeResult(p.result);
-  answerPanel.hidden = false;
-  if (typeof answerPanel.scrollIntoView === "function") {
-    answerPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }
-}
-
-function updateResumeButton(): void {
-  const ok = canResume(currentRun);
-  resumeEl.hidden = !ok;
-}
-
-/** 当前会话还能不能接着聊；同时控制"新会话"按钮和提交按钮的提示文案。 */
-function updateChatMode(): void {
-  const chatting = canFollowup(currentRun);
-  newChatEl.hidden = !chatting;
-  submitEl.textContent = chatting ? "接着说" : "提交";
-}
-
-function subscribe(runId: string, knownRun: RunRow | null = null): void {
-  source?.close();
-  events = [];
-  currentRunId = runId;
-  currentRun = knownRun;
-  rememberRun(runId);
-  eventsEl.replaceChildren();
-  answerPanel.hidden = true;
-  planPanel.hidden = true;
-  boardPanel.hidden = true;
-  usageEl.textContent = "";
-  setStatus(`订阅 run ${runId} …`);
-
-  const es = new EventSource(`/runs/${runId}/events`);
-  source = es;
-
-  for (const kind of KINDS) {
-    es.addEventListener(kind, (raw) => {
-      const message = raw as MessageEvent<string>;
-      let ev: AgentEvent;
-      try {
-        ev = JSON.parse(message.data) as AgentEvent;
-      } catch {
-        return;
-      }
-      addEvent(ev);
-
-      // 任务图变了就去拉一次看板（create/claim/complete 都会改状态）
-      const d = (ev.data ?? {}) as Record<string, unknown>;
-      if (ev.kind === "tool_call" && typeof d.tool === "string" && d.tool.endsWith("_task")) {
-        scheduleBoardRefresh(runId);
-      }
-
-      if (kind === "end") {
-        es.close();
-        currentRun = {
-          id: runId,
-          task: "",
-          status: String(ev.data?.status ?? "done"),
-          event_count: events.length,
-          result: (ev.data?.result ?? null) as Record<string, unknown> | null,
-        };
-        showAnswer(ev.data);
-        updateResumeButton();
-        updateChatMode();
-        rememberRun(runId);
-        void refreshBoard(runId);
-        setStatus(`run ${runId} 结束`, "ok");
-        void loadHistory();
-      }
-    });
+    main.empty.hidden = false;
+    main.chat.append(main.empty);
   }
 
-  es.addEventListener("error", () => {
-    if (es.readyState === EventSource.CLOSED) setStatus("事件流断了", "error");
+  // 顶栏
+  const conv = currentConversation();
+  main.title.textContent = conv ? shortTitle(conv.title, 40) : "新会话";
+  const totalUsage = turns.reduce(
+    (acc, t) => {
+      acc.steps += t.usage.steps;
+      acc.inputTokens += t.usage.inputTokens;
+      acc.outputTokens += t.usage.outputTokens;
+      acc.toolCalls += t.usage.toolCalls;
+      acc.denied += t.usage.denied;
+      acc.failures += t.usage.failures;
+      acc.compactions += t.usage.compactions;
+      acc.savedChars += t.usage.savedChars;
+      acc.elapsedMs += t.usage.elapsedMs;
+      return acc;
+    },
+    { steps: 0, inputTokens: 0, outputTokens: 0, toolCalls: 0, denied: 0, failures: 0, compactions: 0, savedChars: 0, elapsedMs: 0 },
+  );
+  main.usage.textContent = totalUsage.steps ? formatUsage(totalUsage) : "";
+
+  const busy = isBusy();
+  main.submit.disabled = busy;
+  main.submit.textContent = busy ? "运行中…" : (runs.length > 0 ? "接着说" : "发送");
+  main.resume.hidden = !latestRunResumable();
+  // 徽章必须跟着 busy 一起复位，否则跑完之后还挂着"运行中…"
+  main.status.hidden = !busy;
+  if (busy) main.status.textContent = "运行中…";
+
+  scrollToBottom();
+}
+
+function latestRunResumable(): boolean {
+  const last = runs[runs.length - 1];
+  if (!last) return false;
+  // 出错（provider 挂了等）同样可以从检查点续跑
+  if (last.status === "error") return true;
+  if (last.status !== "done") return false;
+  const ok = (last.result as Record<string, unknown> | null | undefined)?.ok;
+  return ok === false;
+}
+
+function render(): void {
+  if (renderQueued) return;
+  renderQueued = true;
+  window.requestAnimationFrame(() => {
+    renderQueued = false;
+    renderChat();
+    renderConversations();
   });
+}
+
+function scrollToBottom(): void {
+  main.chat.scrollTop = main.chat.scrollHeight;
 }
 
 /* ------------------------------------------------------------------ 数据加载 */
 
-async function loadHistory(): Promise<void> {
+async function loadWorkspaces(): Promise<void> {
   try {
-    const resp = await fetch("/runs");
-    const data = (await resp.json()) as { runs: RunRow[] };
-    if (data.runs.length === 0) {
-      historyEl.innerHTML = '<li class="muted">（空）</li>';
-      return;
-    }
-    historyEl.replaceChildren();
-    for (const run of data.runs.slice(0, 12)) {
-      const li = document.createElement("li");
-      const open = document.createElement("button");
-      open.className = "link";
-      open.textContent = `${run.status} · ${run.event_count} 条 · ${run.task.slice(0, 40)}`;
-      open.addEventListener("click", () => {
-        currentRun = run;
-        subscribe(run.id);
-        updateChatMode();
-      });
-      li.append(open);
-      if (canResume(run)) {
-        const again = document.createElement("button");
-        again.className = "chip";
-        again.textContent = "继续";
-        again.addEventListener("click", () => void resumeRun(run.id));
-        li.append(again);
-      }
-      historyEl.append(li);
-    }
+    const data = await api.workspaces();
+    workspaces = data.workspaces;
+    renderWorkspaces();
   } catch {
-    historyEl.innerHTML = '<li class="muted">拉取历史失败</li>';
+    sidebar.workspace.replaceChildren(h("option", {}, "（工作区列表拉取失败）"));
   }
 }
 
-async function loadHealth(): Promise<void> {
+async function loadConversations(): Promise<void> {
   try {
-    const resp = await fetch("/healthz");
-    const data = (await resp.json()) as { store?: string; runs?: number };
-    storeEl.textContent = `store: ${data.store ?? "?"} · ${data.runs ?? 0} 个 run`;
+    const data = await api.conversations();
+    conversations = data.conversations;
+    renderConversations();
   } catch {
-    storeEl.textContent = "store: 连不上";
+    sidebar.conversations.replaceChildren(h("p", { class: "muted hint" }, "拉取历史失败"));
   }
+}
+
+let conversationGeneration = 0;
+
+async function openConversation(rootId: string, opts: { silent?: boolean } = {}): Promise<void> {
+  const gen = ++conversationGeneration;
+  conversationRoot = rootId;
+  remember(LAST_CONVERSATION_KEY, rootId);
+  closeStream?.();
+  closeStream = null;
+  liveRun = null;
+  liveEvents = [];
+
+  const conv = conversations.find((c) => c.root_id === rootId);
+  if (!conv) {
+    // 新会话：还没有 run
+    runs = [];
+    render();
+    return;
+  }
+
+  if (!opts.silent) setStatus("加载会话…");
+  // 并发拉：串行 await 在长会话里很慢，而且慢的那个晚到会覆盖后点的那个
+  const settled = await Promise.all(
+    conv.run_ids.map((runId) => api.runWithEvents(runId).catch(() => null)),
+  );
+  if (gen !== conversationGeneration) return;   // 用户已经切走了，别覆盖
+  const loaded = settled.filter((r): r is RunRow => r !== null);
+  runs = loaded;
+  render();
+
+  const last = runs[runs.length - 1];
+  if (last && (last.status === "running" || last.status === "queued")) {
+    attachStream(last);
+  } else {
+    setStatus("");
+  }
+  renderConversations();
+}
+
+function attachStream(run: RunRow): void {
+  closeStream?.();
+  liveRun = run;
+  // 关键：这里必须清空。后端 SSE 每次连接都从头重放全部事件，
+  // 如果先把 ?events=true 取回的塞进来，同一批事件就被渲染两遍
+  // （实测：一次 bash 调用显示成两行、usage 翻倍）。
+  liveEvents = [];
+  const idx = runs.findIndex((r) => r.id === run.id);
+  if (idx >= 0) runs[idx] = { ...run, events: liveEvents };
+  else runs = [...runs, { ...run, events: liveEvents }];
+
+  closeStream = subscribeRun(
+    run.id,
+    (ev) => {
+      liveEvents = [...liveEvents, ev];
+      const current = runs.find((r) => r.id === run.id);
+      if (current) current.events = liveEvents;
+      render();
+    },
+    (_kind, ev) => {
+      const data = (ev.data ?? {}) as Record<string, unknown>;
+      liveRun = null;
+      const current = runs.find((r) => r.id === run.id);
+      if (current) {
+        current.status = String(data.status ?? "done");
+        current.result = (data.result ?? null) as Record<string, unknown> | null;
+        current.error = typeof data.error === "string" ? data.error : null;
+        current.events = liveEvents;
+      }
+      setStatus(current?.status === "error" ? "出错了" : "完成", current?.status === "error" ? "error" : "ok");
+      render();
+      void loadConversations();
+      void loadWorkspaces();
+    },
+    () => setStatus("事件流断了", "error"),
+  );
 }
 
 /* ------------------------------------------------------------------ 动作 */
 
+function newChat(): void {
+  closeStream?.();
+  closeStream = null;
+  conversationRoot = "";
+  runs = [];
+  liveRun = null;
+  liveEvents = [];
+  forget(LAST_CONVERSATION_KEY);
+  main.task.value = "";
+  main.chat.replaceChildren(main.empty);
+  main.empty.hidden = false;
+  setStatus("");
+  render();
+  main.task.focus();
+}
+
+let submitting = false;
+
 async function submit(): Promise<void> {
-  const task = taskEl.value.trim();
+  // 运行中再提交会新开一个 run 并把事件流抢过来，旧 run 还在后台烧钱
+  if (submitting || isBusy()) {
+    setStatus("上一轮还在跑，等它结束", "error");
+    return;
+  }
+  const task = main.task.value.trim();
   if (!task) {
     setStatus("先写个任务", "error");
     return;
   }
+  const workspace = selectedWorkspace();
+  if (workspace) remember(LAST_WORKSPACE_KEY, workspace);
 
-  // 上一轮已经聊完：接着它继续。否则开一个新的 run。
-  if (canFollowup(currentRun) && currentRun) {
-    await followup(currentRun.id, task);
-    return;
-  }
+  const lastRun = runs[runs.length - 1];
+  const canFollow = lastRun && canContinue(lastRun);
 
-  submitEl.disabled = true;
-  setStatus("提交中…");
+  submitting = true;
+  main.submit.disabled = true;
+  setStatus(canFollow ? "接着上一轮…" : "提交中…");
+
   try {
-    const body: Record<string, unknown> = {
+    let runId: string;
+    if (canFollow && lastRun) {
+      const resp = await api.followup(lastRun.id, task, Number(main.maxSteps.value) || 8);
+      runId = resp.id;
+    } else {
+      const resp = await api.createRun({
+        task,
+        workspace: workspace || undefined,
+        model: main.model.value || undefined,
+        maxSteps: Number(main.maxSteps.value) || 8,
+        includeFiles: main.optFiles.checked,
+        plan: main.optPlan.checked,
+        skills: main.optSkills.checked,
+        compact: main.optCompact.checked,
+        tasks: main.optTasks.checked,
+      });
+      runId = resp.id;
+      if (!conversationRoot) conversationRoot = runId;
+      remember(LAST_CONVERSATION_KEY, conversationRoot);
+    }
+    main.task.value = "";
+
+    const row: RunRow = {
+      id: runId,
       task,
-      max_steps: Number(maxStepsEl.value) || 8,
-      include_files: optFiles.checked,
-      plan: optPlan.checked,
-      skills: optSkills.checked,
-      compact: optCompact.checked,
-      tasks: optTasks.checked,
+      status: "running",
+      result: null,
+      created_at: Date.now() / 1000,
+      events: [],
     };
-    if (modelEl.value) body.model = modelEl.value;
-
-    const resp = await fetch("/runs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      setStatus(`提交失败 ${resp.status}：${text.slice(0, 120)}`, "error");
-      return;
+    if (canFollow) {
+      runs = [...runs, row];
+    } else {
+      runs = [row];
+      conversationRoot = runId;
     }
-    const { id } = (await resp.json()) as { id: string };
-    subscribe(id);
+    attachStream(row);
+    render();
+    void loadConversations();
   } catch (err) {
-    setStatus(`提交出错：${String(err)}`, "error");
+    const message = err instanceof Error ? err.message : String(err);
+    setStatus(`提交失败：${message}`, "error");
   } finally {
-    submitEl.disabled = false;
+    submitting = false;
+    main.submit.disabled = false;
   }
 }
 
-async function followup(runId: string, text: string): Promise<void> {
-  submitEl.disabled = true;
-  setStatus("接着上一轮…");
+/** 上一轮能不能接着聊：正常完成或出错都算，还在跑的不算。 */
+function canContinue(run: RunRow): boolean {
+  return run.status === "done" || run.status === "error";
+}
+
+async function resumeRun(): Promise<void> {
+  const last = runs[runs.length - 1];
+  if (!last) return;
+  setStatus("从检查点继续…");
   try {
-    const resp = await fetch(`/runs/${runId}/followup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, max_steps: Number(maxStepsEl.value) || 8 }),
-    });
-    if (!resp.ok) {
-      const detail = await resp.text();
-      setStatus(`续聊失败 ${resp.status}：${detail.slice(0, 120)}`, "error");
-      return;
-    }
-    const { id } = (await resp.json()) as { id: string };
-    taskEl.value = "";
-    subscribe(id);
+    await api.resume(last.id, Math.max(Number(main.maxSteps.value) || 8, 8));
+    const refreshed = await api.run(last.id);
+    runs = runs.map((r) => (r.id === last.id ? { ...refreshed, events: r.events } : r));
+    attachStream(runs[runs.length - 1]);
+    render();
   } catch (err) {
-    setStatus(`续聊出错：${String(err)}`, "error");
-  } finally {
-    submitEl.disabled = false;
+    const message = err instanceof Error ? err.message : String(err);
+    setStatus(`继续失败：${message}`, "error");
   }
 }
 
-/** 开一个新会话：断开当前会话的关联，但不清历史。 */
-function newChat(): void {
-  source?.close();
-  source = null;
-  currentRun = null;
-  currentRunId = "";
-  events = [];
-  eventsEl.replaceChildren();
-  answerPanel.hidden = true;
-  planPanel.hidden = true;
-  boardPanel.hidden = true;
-  usageEl.textContent = "";
-  taskEl.value = "";
-  forgetRun();
-  updateChatMode();
-  setStatus("新会话");
-}
+/* ------------------------------------------------------------------ 初始化 */
 
-async function resumeRun(runId: string): Promise<void> {
-  const steps = Number(maxStepsEl.value) || 8;
-  setStatus(`正在从检查点继续 ${runId} …`);
+async function init(): Promise<void> {
   try {
-    const resp = await fetch(`/runs/${runId}/resume`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ max_steps: Math.max(steps, 8) }),
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      setStatus(`继续失败 ${resp.status}：${text.slice(0, 120)}`, "error");
-      return;
-    }
-    subscribe(runId);
-  } catch (err) {
-    setStatus(`继续出错：${String(err)}`, "error");
+    const health = await api.health();
+    sidebar.store.textContent = `${health.store ?? "?"} · ${health.runs ?? 0} 个 run`;
+  } catch {
+    sidebar.store.textContent = "后端连不上";
+  }
+
+  await loadWorkspaces();
+  await loadConversations();
+
+  const saved = recall(LAST_CONVERSATION_KEY);
+  if (saved && conversations.some((c) => c.root_id === saved)) {
+    await openConversation(saved, { silent: true });
+  } else {
+    render();
   }
 }
 
-/* ------------------------------------------------------------------ 事件绑定 */
-
-submitEl.addEventListener("click", () => void submit());
-taskEl.addEventListener("keydown", (e) => {
+main.submit.addEventListener("click", () => void submit());
+main.task.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void submit();
 });
-newChatEl.addEventListener("click", () => newChat());
-resumeEl.addEventListener("click", () => {
-  if (currentRunId) void resumeRun(currentRunId);
+main.resume.addEventListener("click", () => void resumeRun());
+sidebar.newChat.addEventListener("click", () => newChat());
+sidebar.refresh.addEventListener("click", () => {
+  void loadWorkspaces();
+  void loadConversations();
+  setStatus("已刷新");
 });
-filtersEl.addEventListener("click", (e) => {
-  const target = e.target as HTMLElement;
-  const button = target.closest("button");
-  const value = button?.dataset.filter as EventFilter | undefined;
-  if (!value) return;
-  filter = value;
-  for (const b of filtersEl.querySelectorAll("button")) {
-    b.classList.toggle("active", b === button);
-  }
-  renderEvents();
+sidebar.workspace.addEventListener("change", () => {
+  sidebar.custom.value = "";
+  remember(LAST_WORKSPACE_KEY, sidebar.workspace.value);
 });
-
-/** 页面加载时恢复上次会话：把最近一次 run 拉回来，事件回放一遍，
- * 这样刷新之后直接输入下一句话仍然是"接着说"。 */
-async function restoreLastRun(): Promise<void> {
-  const runId = restoreRunId();
-  if (!runId) return;
-  try {
-    const resp = await fetch(`/runs/${runId}`);
-    if (!resp.ok) {
-      forgetRun();
-      return;
-    }
-    const run = (await resp.json()) as RunRow;
-    if (!canFollowup(run) && !canResume(run)) {
-      // 上次那个还在跑或者状态异常：不要把"接着说"挂在一个不存在的会话上
-      forgetRun();
-      return;
-    }
-    subscribe(runId, run);
-    updateChatMode();
-    setStatus(`已恢复上次会话（${runId}），直接输入就是接着说`);
-  } catch {
-    forgetRun();
-  }
+sidebar.custom.addEventListener("input", () => {
+  if (sidebar.custom.value.trim()) remember(LAST_WORKSPACE_KEY, sidebar.custom.value.trim());
+});
+for (const example of document.querySelectorAll<HTMLButtonElement>(".example")) {
+  example.addEventListener("click", () => {
+    main.task.value = example.dataset.task ?? "";
+    main.task.focus();
+  });
 }
 
-void loadHealth();
-void loadHistory();
-void restoreLastRun();
+void init();

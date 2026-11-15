@@ -270,6 +270,10 @@ def cmd_dev(args) -> int:
         dev.build_frontend(root)
 
     redis_proc, url = dev.ensure_redis(root, enabled=not args.no_redis)
+    if args.no_redis:
+        # 显式清掉：否则外部设置的 MINICODE_REDIS_URL 会让服务照样连 Redis，
+        # 和用户明确要求的内存模式不符
+        os.environ.pop("MINICODE_REDIS_URL", None)
     dev.apply_env(url)
     if url:
         state = "（已在运行，直接复用）" if redis_proc is None else "（刚启动）"
@@ -295,7 +299,11 @@ def cmd_dev(args) -> int:
             )
 
         if args.reload:
-            # reload 需要一个 import 字符串，uvicorn 会在子进程里重建 app
+            # reload 需要一个 import 字符串，uvicorn 会在子进程里重建 app。
+            # 注意 factory 拿不到 --workspace，所以这里显式把它写进环境变量，
+            # 让 create_app 的默认工作区跟着走（否则 --reload 会静默忽略 --workspace）。
+            if args.workspace:
+                os.environ["MINICODE_WORKSPACE"] = str(Path(args.workspace).resolve())
             uvicorn.run(
                 "minicode.service:create_app",
                 factory=True,

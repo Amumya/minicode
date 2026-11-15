@@ -35,7 +35,27 @@ def _err(msg: str) -> ToolResult:
     return ToolResult(msg, exit_code=1)
 
 
-class ReadFileTool:
+class _SafeRun:
+    """给文件工具统一兜底。
+
+    GBK/UTF-16 文件、只读、磁盘满、权限不足都会抛 OSError/UnicodeError。
+    不接住的话异常会冒到主循环，整个 run 直接中断，模型连"这次工具失败了"都看不到。
+    """
+
+    name = "?"
+
+    def run(self, args: dict, cwd: Path) -> ToolResult:
+        try:
+            return self._run(args, cwd)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return ToolResult(f"{self.name} 失败（{type(exc).__name__}）：{exc}",
+                              exit_code=1)
+
+    def _run(self, args: dict, cwd: Path) -> ToolResult:      # pragma: no cover
+        raise NotImplementedError
+
+
+class ReadFileTool(_SafeRun):
     name = "read_file"
     description = "读取工作目录里的一个文本文件，返回内容和行号。"
     input_schema = {
@@ -44,7 +64,7 @@ class ReadFileTool:
         "required": ["path"],
     }
 
-    def run(self, args: dict, cwd: Path) -> ToolResult:
+    def _run(self, args: dict, cwd: Path) -> ToolResult:
         rel = (args or {}).get("path", "")
         if not rel:
             return _err("缺少 path 参数")
@@ -65,7 +85,7 @@ class ReadFileTool:
         return ToolResult(numbered, exit_code=0, meta={"path": rel, "lines": text.count("\n") + 1})
 
 
-class WriteFileTool:
+class WriteFileTool(_SafeRun):
     name = "write_file"
     description = "把内容整个写入一个文件，父目录不存在会自动创建。"
     input_schema = {
@@ -77,7 +97,7 @@ class WriteFileTool:
         "required": ["path", "content"],
     }
 
-    def run(self, args: dict, cwd: Path) -> ToolResult:
+    def _run(self, args: dict, cwd: Path) -> ToolResult:
         rel = (args or {}).get("path", "")
         content = (args or {}).get("content", "")
         if not rel:
@@ -92,7 +112,7 @@ class WriteFileTool:
                           meta={"path": rel, "bytes": len(content.encode('utf-8'))})
 
 
-class EditFileTool:
+class EditFileTool(_SafeRun):
     name = "edit_file"
     description = (
         "把文件里的 old_text 替换成 new_text。old_text 必须在文件里恰好出现一次，"
@@ -108,7 +128,7 @@ class EditFileTool:
         "required": ["path", "old_text", "new_text"],
     }
 
-    def run(self, args: dict, cwd: Path) -> ToolResult:
+    def _run(self, args: dict, cwd: Path) -> ToolResult:
         rel = (args or {}).get("path", "")
         old = (args or {}).get("old_text", "")
         new = (args or {}).get("new_text", "")

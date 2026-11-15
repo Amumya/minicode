@@ -44,6 +44,17 @@ EXPECTED_TITLE = "minicode"
 _BAD_TITLE_MARKERS = ("新建标签页", "New tab", "无标题", "Untitled")
 
 
+def _port_in_use(host: str, port: int, timeout: float = 0.3) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        try:
+            return sock.connect_ex((host, port)) == 0
+        except OSError:
+            return False
+
+
 def find_browser(explicit: str | None = None) -> str | None:
     """找一个能用的浏览器。找不到返回 None（调用方退化成"只打印地址"）。"""
     if explicit:
@@ -262,6 +273,13 @@ def run_app(
             print(f"  app 参数   : {' '.join(browser_args(found, url, profile, 'app'))}")
             print(f"  window 参数: {' '.join(browser_args(found, url, profile, 'window'))}")
         return 0
+
+    # 端口被旧实例占着时，我们起的 uvicorn 会绑定失败，但 wait_for_health
+    # 会从旧实例拿到 200 —— 结果窗口指向旧服务，用户以为在用新的。
+    if _port_in_use(host, port):
+        print(f"端口 {port} 已经被占用（可能之前的服务还在跑）。", file=sys.stderr)
+        print(f"  换个端口：minicode app --port {port + 1}", file=sys.stderr)
+        return 1
 
     try:
         import uvicorn

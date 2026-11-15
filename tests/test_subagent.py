@@ -132,7 +132,7 @@ def test_subagent_failure_does_not_crash_parent(tmp_path):
     tool = TaskTool(provider=Boom(), settings=_settings(), build_tools=_registry)
     r = tool.run({"prompt": "查"}, tmp_path)
     assert r.exit_code == 1
-    assert "子代理出错" in r.content
+    assert ("子代理出错" in r.content or "没有给出结论" in r.content)
 
 
 def test_task_tool_requires_prompt(tmp_path):

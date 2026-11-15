@@ -20,12 +20,16 @@ from minicode.events import Recorder
 from minicode.compact import Compactor
 from minicode.hooks import POST_TOOL, PRE_TOOL, HookBus, HookContext, default_hooks
 from minicode.provider import ModelReply, Provider
-from minicode.tools.base import Registry
+from minicode.tools.base import Registry, ToolResult
 
-DEFAULT_SYSTEM = (
-    "你是一个在命令行里干活的助手。可以用 bash 工具执行命令来完成用户的任务。"
-    "命令跑完会带上退出码，退出码非 0 表示失败。任务完成后直接给出结论，不要再调工具。"
-)
+def _default_system() -> str:
+    """默认系统提示词统一从 prompts 生成，避免这里、prompts、子代理三处各写一份而发散。"""
+    from minicode.prompts import default_system
+
+    return default_system()
+
+
+DEFAULT_SYSTEM = _default_system()
 
 
 @dataclass
@@ -37,6 +41,7 @@ class RunResult:
     usage: dict = field(default_factory=dict)
     tool_calls: int = 0
     denied: int = 0
+    error: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -47,6 +52,7 @@ class RunResult:
             "usage": self.usage,
             "tool_calls": self.tool_calls,
             "denied": self.denied,
+            "error": self.error,
         }
 
 
@@ -96,21 +102,28 @@ def run(
     if resume:
         messages: list[dict] = list(resume.get("messages") or [])
         start_step = int(resume.get("step", 0)) + 1
+        # max_steps 是"**再给几步**"，不是"跑到第几步"。
+        # 之前按绝对步数算：检查点停在 max_steps 时，续跑循环一次都不进，
+        # 直接返回 ok=False —— 用户点「继续跑」看到的是"没反应"。
+        end_step = start_step + max(1, settings.max_steps) - 1
         usage_total.update(resume.get("usage") or {})
-        rec.add("resume", from_step=start_step - 1, max_steps=settings.max_steps)
+        rec.add("resume", from_step=start_step - 1,
+                max_steps=settings.max_steps, until_step=end_step)
     else:
         messages = [{"role": "user", "content": task}]
         start_step = 1
+        end_step = settings.max_steps
 
     # 不传就用默认的（只挂一个权限钩子）。传了就完全用调用方的，便于测试和扩展。
     bus = hooks if hooks is not None else default_hooks()
 
     rec.add("start", task=task, model=settings.model, tools=tools.names(),
             hooks=bus.names())
-    n_calls = 0
+    n_calls = 0      # 实际发起的工具调用次数（并行算多次）
     n_denied = 0
+    n_models = 0     # 模型调用次数
 
-    for step in range(start_step, settings.max_steps + 1):
+    for step in range(start_step, end_step + 1):
         # 每次调模型之前压一次。压的是"要发出去的那份"，
         # 所以检查点里存的也是压缩后的内容 —— 恢复回来发送的东西才一致。
         if compactor is not None:
@@ -118,8 +131,24 @@ def run(
             if cstats.changed:
                 rec.add("compact", step=step, **cstats.as_dict())
 
-        reply = provider.complete(system, messages, tools.schemas())
-        n_calls += 1
+        try:
+            reply = provider.complete(system, messages, tools.schemas())
+        except Exception as exc:  # noqa: BLE001 - 网络/API 异常不能让整个进程挂掉
+            rec.add("finish", step=step, ok=False, reason="provider_error")
+            if on_step is not None:
+                # 消息没变，但保留进度，至少能续跑
+                on_step({"messages": messages, "step": step - 1, "usage": usage_total})
+            return RunResult(
+                ok=False,
+                final_text="",
+                steps=step,
+                stop_reason="provider_error",
+                usage=usage_total,
+                tool_calls=n_calls,
+                denied=n_denied,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        n_models += 1
         for k in usage_total:
             usage_total[k] += reply.usage.get(k, 0)
         rec.add(
@@ -133,24 +162,55 @@ def run(
 
         messages.append(_assistant_message(reply))
 
+        # 最后一步还要求调工具：这些工具不执行。
+        # 执行了结果也永远不会再发给模型（循环到此结束），只会白花钱，
+        # 还可能有不可逆副作用。给一组"未执行"的结果让对话结构保持合法。
+        if step == end_step and reply.tool_calls:
+            skipped = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "is_error": True,
+                    "content": "[skipped] 步数已用尽，这条工具调用没有执行",
+                }
+                for tc in reply.tool_calls
+            ]
+            messages.append({"role": "user", "content": skipped})
+            if on_step is not None:
+                on_step({"messages": messages, "step": step, "usage": usage_total})
+            rec.add("finish", step=step, ok=False, reason="max_steps")
+            return RunResult(
+                ok=False,
+                final_text=reply.text,
+                steps=step,
+                stop_reason="max_steps",
+                usage=usage_total,
+                tool_calls=n_calls,
+                denied=n_denied,
+            )
+
         if not reply.tool_calls:
-            rec.add("finish", step=step, ok=True, reason=reply.stop_reason)
+            # 只有"模型自己说完了"才算成功。max_tokens = 回答被截断，
+            # refusal = 拒绝回答 —— 都不算完成，否则半截答案会被当成"任务做完了"。
+            stopped_ok = reply.stop_reason not in ("max_tokens", "refusal")
+            rec.add("finish", step=step, ok=stopped_ok, reason=reply.stop_reason)
             # 正常收尾也要存一次检查点：多轮对话要靠它拿到"这一轮结束时完整的消息列表"。
             # 不存的话，只有被中断的 run 才有检查点，完成后就没法接着聊了。
             if on_step is not None:
                 on_step({"messages": messages, "step": step, "usage": usage_total})
             return RunResult(
-                ok=True,
+                ok=stopped_ok,
                 final_text=reply.text,
                 steps=step,
                 stop_reason=reply.stop_reason,
                 usage=usage_total,
-                tool_calls=n_calls - 1,
+                tool_calls=n_calls,
                 denied=n_denied,
             )
 
         results: list[dict] = []
         for tc in reply.tool_calls:
+            n_calls += 1
             ctx = HookContext(
                 tool=tc.name,
                 args=dict(tc.arguments or {}),
@@ -198,7 +258,13 @@ def run(
                 )
                 continue
 
-            tool_result = tool.run(call_args, workspace)
+            try:
+                tool_result = tool.run(call_args, workspace)
+            except Exception as exc:  # noqa: BLE001 - 工具内部异常不该中断整个 run
+                tool_result = ToolResult(
+                    f"工具内部错误（{type(exc).__name__}）：{exc}",
+                    exit_code=1,
+                )
             rec.add(
                 "tool_call",
                 step=step,
@@ -235,13 +301,13 @@ def run(
         if on_step is not None:
             on_step({"messages": messages, "step": step, "usage": usage_total})
 
-    rec.add("finish", step=settings.max_steps, ok=False, reason="max_steps")
+    rec.add("finish", step=end_step, ok=False, reason="max_steps")
     return RunResult(
         ok=False,
         final_text="",
-        steps=settings.max_steps,
+        steps=end_step,
         stop_reason="max_steps",
         usage=usage_total,
-        tool_calls=n_calls - 1,
+        tool_calls=n_calls,
         denied=n_denied,
     )

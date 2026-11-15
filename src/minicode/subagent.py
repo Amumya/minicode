@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -37,6 +39,21 @@ class SubagentReport:
     final_text: str = ""
     error: str = ""
     events: list[dict] = field(default_factory=list)
+
+
+def _default_child_system() -> str:
+    """子代理的默认系统提示词。
+
+    为什么不能只写一句"你是子代理"：父代理的提示词里有 shell 是 PowerShell、
+    该用哪个 Python 解释器这些信息，子代理少了它们就会照 Unix 习惯写
+    `wc -l`、`2>/dev/null`，白耗步数。这里复用同一个生成器，保证两个入口一致。
+    """
+    from minicode.prompts import default_system
+
+    return (
+        default_system(shell_hint=True, python_hint=sys.executable)
+        + "\n\n你现在是子代理：只做被交代的这件小事，做完直接给结论，不要扩展范围。"
+    )
 
 
 def run_subagent(
@@ -66,7 +83,7 @@ def run_subagent(
             settings=child_settings,
             workspace=workspace,
             recorder=recorder,
-            system=system or "你是子代理，只做被交代的这件小事，做完直接给结论。",
+            system=system or _default_child_system(),
         )
     except Exception as exc:  # noqa: BLE001 - 子代理异常不能让父代理崩
         return SubagentReport(ok=False, steps=0, stop_reason="error",

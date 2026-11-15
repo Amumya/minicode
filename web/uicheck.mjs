@@ -1,16 +1,11 @@
 #!/usr/bin/env node
 /**
- * 用 jsdom 把构建出来的 bundle 真跑一遍，看界面逻辑能不能把各个面板都点亮。
+ * 用 jsdom 把构建出来的 bundle 真跑一遍，看界面逻辑能不能把布局和流式链路跑起来。
  *
- * 为什么需要它：`node --test src/*.test.ts` 测的是纯逻辑和接线（id、路径对不对），
- * 但"提交 → 收事件 → 各面板更新 → 显示结果"这条链路是 DOM 操作，静态检查测不到。
- * 这个脚本用假的 fetch 和 EventSource 把整条链路跑一遍。
+ * 覆盖的链路：左栏（工作区/历史会话）→ 点会话加载 → 新会话 → 提交 → 流式更新
+ *           → 结束 → 接着说 → 任务看板展开 → 状态徽章复位 → 拒绝运行中重复提交。
  *
- * 用法（在 web/ 下）：
- *     npm install --no-save jsdom
- *     node uicheck.mjs
- *
- * jsdom 故意没写进 devDependencies：它只在这一个检查里用得上，用到时临时装。
+ * 用法（在 web/ 下）：npm install --no-save jsdom && node uicheck.mjs
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -46,50 +41,76 @@ const vc = new VirtualConsole();
 vc.on("jsdomError", (e) => errors.push("jsdom: " + e.message));
 vc.on("error", (...a) => errors.push("console.error: " + a.join(" ")));
 
-// 必须给一个真实的 url：about:blank 是不透明源，localStorage 会直接抛异常
 const dom = new JSDOM(html, {
   runScripts: "outside-only",
   virtualConsole: vc,
   url: "http://127.0.0.1:8765/",
+  pretendToBeVisual: true,
 });
 const { window } = dom;
 
 const calls = [];
-window.fetch = async (url, opts) => {
-  calls.push(`${opts?.method ?? "GET"} ${url}`);
+const bodies = new Map();
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+const HISTORY_RUN = {
+  id: "run-a",
+  task: "数一下文件数量",
+  status: "done",
+  result: { ok: true, final_text: "一共 12 个文件" },
+  created_at: nowSec() - 3600,
+  event_count: 2,
+  events: [
+    { kind: "start", ts: nowSec(), data: { task: "数一下文件数量" } },
+    { kind: "tool_call", ts: nowSec(), data: {
+        step: 1, tool: "bash", args: { command: "Get-ChildItem" }, exit_code: 0, failed: false } },
+  ],
+};
+
+window.fetch = async (url, opts = {}) => {
+  const method = opts.method ?? "GET";
+  calls.push(`${method} ${url}`);
+  if (opts.body) bodies.set(`${method} ${url}`, JSON.parse(opts.body));
   const reply = (obj) => ({
     ok: true,
     status: 200,
     json: async () => obj,
     text: async () => JSON.stringify(obj),
   });
-  if (url === "/healthz") return reply({ ok: true, store: "StubStore", runs: 1 });
-  if (url === "/runs" && (opts?.method ?? "GET") === "GET") {
-    return reply({ runs: [
-      { id: "old-1", task: "跑一半的任务", status: "done", event_count: 3, result: { ok: false } },
-    ] });
-  }
-  if (url === "/runs" && opts?.method === "POST") return reply({ id: "stub-run" });
-  if (url === "/runs/prev-run") {
+
+  if (url === "/healthz") return reply({ ok: true, store: "StubStore", runs: 3 });
+  if (url.startsWith("/workspaces")) {
     return reply({
-      id: "prev-run", task: "刷新前的会话", status: "done", event_count: 3,
-      result: { ok: true }, parent_id: null,
+      default: "D:\\work\\demo",
+      workspaces: [
+        { path: "D:\\work\\demo", name: "demo", exists: true, is_default: true },
+        { path: "D:\\work\\other", name: "other", exists: true, is_default: false },
+      ],
     });
   }
+  if (url.startsWith("/conversations")) {
+    return reply({
+      conversations: [{
+        root_id: "run-a", title: "数一下文件数量", updated_at: nowSec() - 60,
+        status: "done", turns: 1, run_ids: ["run-a"], latest_run_id: "run-a",
+        workspace: "D:\\work\\demo",
+      }],
+    });
+  }
+  if (url.startsWith("/runs/run-a")) return reply(HISTORY_RUN);
+  if (url === "/runs" && method === "POST") return reply({ id: "run-new" });
+  if (url.startsWith("/runs/run-new/followup")) return reply({ id: "run-followup" });
   if (url.endsWith("/tasks")) {
     return reply({
       enabled: true,
       tasks: [
         { id: "task_aaaa", subject: "读代码", status: "completed", owner: "agent", blockedBy: [] },
         { id: "task_bbbb", subject: "改函数", status: "in_progress", owner: "agent", blockedBy: ["task_aaaa"] },
-        { id: "task_cccc", subject: "跑测试", status: "pending", owner: null, blockedBy: ["task_bbbb"] },
       ],
-      progress: { done: 1, total: 3 },
+      progress: { done: 1, total: 2 },
     });
   }
-  if (url.endsWith("/resume")) return reply({ id: "stub-run", status: "running" });
-  if (url.endsWith("/followup")) return reply({ id: "follow-up-run", parent_id: "stub-run", status: "running" });
-  return { ok: false, status: 404, json: async () => ({}), text: async () => "404" };
+  return reply({ ok: true });
 };
 
 const sources = [];
@@ -104,15 +125,14 @@ class StubEventSource {
     if (!this.listeners.has(kind)) this.listeners.set(kind, []);
     this.listeners.get(kind).push(fn);
   }
-  close() { this.readyState = 2; }
+  close() {
+    this.readyState = 2;
+  }
   emit(kind, data) {
     for (const fn of this.listeners.get(kind) ?? []) fn({ data: JSON.stringify(data) });
   }
 }
 window.EventSource = StubEventSource;
-
-// 模拟"刷新前聊过一次"：localStorage 里记着上次的 run id
-window.localStorage.setItem("minicode:lastRun", "prev-run");
 
 try {
   window.eval(bundle);
@@ -123,134 +143,121 @@ try {
 
 const doc = window.document;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-await sleep(60);
+await sleep(150);
 
 const checks = [];
 const check = (name, ok, detail = "") => checks.push({ name, ok, detail });
 
-check("页面加载会拉后端状态", doc.querySelector("#store").textContent.startsWith("store:"),
-  doc.querySelector("#store").textContent);
-check("历史里给未完成的 run 显示「继续」",
-  [...doc.querySelectorAll("#history button")].some((b) => b.textContent === "继续"));
+// ---------------------------------------------------------------- 初始化与左栏
+check("左栏工作区下拉有选项", doc.querySelectorAll("#workspace option").length >= 2,
+  `${doc.querySelectorAll("#workspace option").length} 个`);
+check("工作区默认选中默认目录", doc.querySelector("#workspace").value === "D:\\work\\demo");
+check("左栏渲染了历史会话", doc.querySelectorAll("#conversations .conv").length === 1);
+check("底部显示存储信息", doc.querySelector("#storeInfo").textContent.includes("StubStore"));
 
-// ---- 刷新后恢复上次会话 ----
-check("刷新后能恢复上次会话（按钮变「接着说」）",
-  doc.querySelector("#submit").textContent === "接着说",
-  doc.querySelector("#submit").textContent);
-check("恢复后会提示已恢复", doc.querySelector("#status").textContent.includes("已恢复"),
-  doc.querySelector("#status").textContent);
+// ---------------------------------------------------------------- 打开历史会话
+doc.querySelector("#conversations .conv").click();
+await sleep(150);
+check("点会话后加载出对话", doc.querySelectorAll("#chat .turn").length === 1);
+check("助手回答显示出来", doc.querySelector("#chat .answer").textContent.includes("一共 12 个文件"));
+check("过程可以展开", !!doc.querySelector("#chat details.process"));
 
-// 恢复之后直接输入 → 应该就是接着上次那轮说
-doc.querySelector("#task").value = "接着问一句";
-doc.querySelector("#submit").click();
-await sleep(80);
-check("恢复后直接提交走 followup",
-  calls.some((c) => c === "POST /runs/prev-run/followup"), calls.slice(-2).join(" | "));
-
-// 后面测试新会话流程，先断开
-doc.querySelector("#newChat").click();
+// 展开"过程"后收到新事件，展开状态要保持（之前每次重画都会被关掉）
+const processDetails = doc.querySelector("#chat details.process");
+processDetails.open = true;
+processDetails.dispatchEvent(new window.Event("toggle"));
 await sleep(30);
 
-// ---- 提交 ----
-doc.querySelector("#task").value = "stub 任务";
-doc.querySelector("#optPlan").checked = true;
-doc.querySelector("#optTasks").checked = true;
-doc.querySelector("#submit").click();
+// ---------------------------------------------------------------- 新会话
+doc.querySelector("#newChat").click();
 await sleep(60);
+check("新会话回到空状态", !doc.querySelector("#empty").hidden);
+check("新会话没有残留消息", doc.querySelectorAll("#chat .turn").length === 0);
 
+// ---------------------------------------------------------------- 提交 + 流式
+doc.querySelector("#task").value = "列出 tests 目录";
+doc.querySelector("#optPlan").checked = true;
+doc.querySelector("#submit").click();
+await sleep(120);
 const es = sources.at(-1);
-check("提交后会订阅事件流", !!es, es?.url ?? "(没有 EventSource)");
-check("提交时把开关带上了", calls.some((c) => c === "POST /runs"));
+check("提交后订阅了事件流", es?.url === "/runs/run-new/events", es?.url ?? "(无)");
+const postBody = bodies.get("POST /runs");
+check("提交 body 带上了任务和开关",
+  postBody?.task === "列出 tests 目录" && postBody?.plan === true,
+  JSON.stringify(postBody ?? {}));
 
-// ---- 事件 ----
-const ts = Math.floor(Date.now() / 1000);
-es.emit("start", { kind: "start", ts, data: { task: "stub 任务", model: "m", tools: ["bash"] } });
-es.emit("model_call", {
-  kind: "model_call", ts,
-  data: { step: 1, stop_reason: "tool_use", usage: { input_tokens: 120, output_tokens: 30 }, tool_calls: 1 },
-});
-es.emit("tool_call", {
-  kind: "tool_call", ts,
-  data: { step: 1, tool: "todo_write", args: { todos: [
-    { content: "读代码", status: "completed" },
-    { content: "改函数", status: "in_progress", blockedBy: [1] },
-    { content: "跑测试", status: "pending", blockedBy: [2] },
-  ] }, exit_code: 0, failed: false },
-});
-await sleep(30);
+// 运行中再点提交 → 不该再发 POST
+const before = calls.filter((c) => c === "POST /runs").length;
+doc.querySelector("#task").value = "再开一个";
+doc.querySelector("#submit").click();
+await sleep(80);
+check("运行中不允许重复提交",
+  calls.filter((c) => c === "POST /runs").length === before,
+  `${before} → ${calls.filter((c) => c === "POST /runs").length}`);
+doc.querySelector("#task").value = "";
 
-check("花费汇总出现", doc.querySelector("#usage").textContent.includes("入 120"),
+const ts = nowSec();
+es.emit("start", { kind: "start", ts, data: { task: "列出 tests 目录" } });
+es.emit("model_call", { kind: "model_call", ts,
+  data: { step: 1, stop_reason: "tool_use", usage: { input_tokens: 120, output_tokens: 30 }, tool_calls: 1 } });
+es.emit("tool_call", { kind: "tool_call", ts,
+  data: { step: 1, tool: "bash", args: { command: "Get-ChildItem tests" }, exit_code: 0, failed: false } });
+es.emit("tool_call", { kind: "tool_call", ts,
+  data: { step: 2, tool: "create_task", args: { subject: "跑测试" }, exit_code: 0, failed: false } });
+await sleep(150);
+
+check("流式事件只渲染一次（不重复）",
+  doc.querySelectorAll("#chat .turn").length === 1 &&
+  doc.querySelectorAll("#chat .tool-list .tool").length === 2,
+  `${doc.querySelectorAll("#chat .tool-list .tool").length} 个工具行`);
+check("顶栏花费在累加", doc.querySelector("#usage").textContent.includes("入 120"),
   doc.querySelector("#usage").textContent);
-check("计划面板出现", doc.querySelector("#planPanel").hidden === false);
-check("计划显示进度", doc.querySelector("#planProgress").textContent.includes("1/3"),
-  doc.querySelector("#planProgress").textContent);
-check("计划显示依赖", doc.querySelector("#plan").textContent.includes("等 1"),
-  doc.querySelector("#plan").textContent.slice(0, 60));
+check("运行中显示徽章", doc.querySelector("#runStatus").hidden === false);
 
-// 任务看板：连续三次任务工具调用，前端应该**只拉一次** /tasks（250ms 防抖）
-const tasksBefore = calls.filter((c) => c.endsWith("/tasks")).length;
-for (const tool of ["create_task", "claim_task", "complete_task"]) {
-  es.emit("tool_call", {
-    kind: "tool_call", ts,
-    data: { step: 2, tool, args: { subject: "跑测试" }, exit_code: 0, failed: false },
-  });
+// ---------------------------------------------------------------- 任务看板
+const board = doc.querySelector("#chat details.board");
+check("对话里有任务看板", !!board);
+if (board) {
+  board.open = true;
+  board.dispatchEvent(new window.Event("toggle"));
+  await sleep(150);
+  check("看板拉到数据并渲染卡片", doc.querySelectorAll("#chat .task-card").length === 2,
+    `${doc.querySelectorAll("#chat .task-card").length} 张`);
 }
-await sleep(450);
-const tasksAfter = calls.filter((c) => c.endsWith("/tasks")).length;
-check("任务工具连调 3 次只拉一次看板（防抖）", tasksAfter - tasksBefore === 1,
-  `调了 ${tasksAfter - tasksBefore} 次`);
-check("任务看板出现", doc.querySelector("#boardPanel").hidden === false);
-check("看板显示三条任务", doc.querySelectorAll("#board .task").length === 3,
-  `${doc.querySelectorAll("#board .task").length} 张卡`);
 
-// 一条失败的工具调用，用来验筛选
-es.emit("tool_call", {
-  kind: "tool_call", ts,
-  data: { step: 3, tool: "bash", args: { command: "exit 1" }, exit_code: 1, failed: true },
-});
-await sleep(20);
-check("失败事件被标成 warn", doc.querySelectorAll("#events .tone-warn").length >= 1);
+// 展开状态在后续事件后仍保持
+es.emit("model_call", { kind: "model_call", ts,
+  data: { step: 2, stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 5 } } });
+await sleep(120);
+check("新事件后展开状态保持", doc.querySelector("#chat details.board")?.open === true);
 
-// ---- 筛选 ----
-const problems = [...doc.querySelectorAll("#filters button")].find((b) => b.dataset.filter === "problems");
-problems.click();
-await sleep(20);
-const rowsAfter = doc.querySelectorAll("#events .event").length;
-check("筛选「只看问题」会过滤掉正常事件", rowsAfter >= 1 && rowsAfter < 8, `${rowsAfter} 行`);
+// ---------------------------------------------------------------- 结束
+es.emit("end", { kind: "end", ts,
+  data: { status: "done", result: { ok: true, final_text: "tests 下有 5 个文件", steps: 2 } } });
+await sleep(150);
+check("结束后显示回答", doc.querySelector("#chat .answer").textContent.includes("tests 下有 5 个文件"));
+check("结束后按钮变成「接着说」", doc.querySelector("#submit").textContent === "接着说");
+check("结束后状态徽章复位", doc.querySelector("#runStatus").hidden === true);
 
-// ---- 结束 ----
-es.emit("end", {
-  kind: "end", ts,
-  data: { status: "done", result: { ok: false, final_text: "", steps: 3, stop_reason: "max_steps" } },
-});
-await sleep(30);
-
-check("结束后显示结果面板", doc.querySelector("#answerPanel").hidden === false);
-check("没跑完时出现「继续跑」按钮", doc.querySelector("#resume").hidden === false);
-
-// ---- 多轮对话 ----
-check("结束后提交按钮变成「接着说」", doc.querySelector("#submit").textContent === "接着说",
-  doc.querySelector("#submit").textContent);
-check("结束后出现「新会话」按钮", doc.querySelector("#newChat").hidden === false);
-
-doc.querySelector("#task").value = "再补一句";
+// ---------------------------------------------------------------- 接着说
+doc.querySelector("#task").value = "再数一下 src";
 doc.querySelector("#submit").click();
-await sleep(80);
-check("续聊会打到 followup 接口",
-  calls.some((c) => c === "POST /runs/stub-run/followup"), calls.slice(-3).join(" | "));
-check("续聊后订阅新的 run", sources.at(-1)?.url === "/runs/follow-up-run/events",
-  sources.at(-1)?.url ?? "(无)");
+await sleep(150);
+check("接着说走 followup", calls.includes("POST /runs/run-new/followup"));
+check("followup body 带上了文本",
+  bodies.get("POST /runs/run-new/followup")?.text === "再数一下 src",
+  JSON.stringify(bodies.get("POST /runs/run-new/followup") ?? {}));
+check("接着说订阅新的 run", sources.at(-1)?.url === "/runs/run-followup/events");
 
-const beforeNew = calls.length;
-doc.querySelector("#newChat").click();
-await sleep(30);
-check("新会话后按钮恢复成「提交」", doc.querySelector("#submit").textContent === "提交",
-  doc.querySelector("#submit").textContent);
-doc.querySelector("#task").value = "全新任务";
-doc.querySelector("#submit").click();
-await sleep(80);
-check("新会话后提交走 /runs 而不是 followup",
-  calls.slice(beforeNew).includes("POST /runs"), calls.slice(beforeNew).join(" | "));
+// ---------------------------------------------------------------- 出错分支
+const es2 = sources.at(-1);
+es2.emit("end", { kind: "end", ts,
+  data: { status: "error", error: "模型端点挂了" } });
+await sleep(150);
+check("出错时显示错误文案", doc.querySelector("#chat .answer.error")?.textContent.includes("模型端点挂了"),
+  doc.querySelector("#chat .answer.error")?.textContent ?? "(没有错误气泡)");
+check("出错后出现「继续跑」", doc.querySelector("#resume").hidden === false);
+
 check("页面没有报错", errors.length === 0, errors.slice(0, 3).join(" | "));
 
 for (const c of checks) {

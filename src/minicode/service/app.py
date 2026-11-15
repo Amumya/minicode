@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -62,10 +62,10 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 class RunRequest(BaseModel):
-    task: str = Field(min_length=1, description="任务内容")
+    task: str = Field(min_length=1, max_length=20000, description="任务内容")
     model: str | None = None
     workspace: str | None = None
-    max_steps: int | None = None
+    max_steps: int | None = Field(default=None, ge=1, le=50)
     include_files: bool = False
     plan: bool = False
     skills: bool = False
@@ -75,12 +75,12 @@ class RunRequest(BaseModel):
 
 class FollowupRequest(BaseModel):
     """多轮对话：在某个已结束的 run 后面接着说一句。"""
-    text: str
-    max_steps: int | None = None
+    text: str = Field(min_length=1, max_length=8000)
+    max_steps: int | None = Field(default=None, ge=1, le=50)
 
 
 class ResumeRequest(BaseModel):
-    max_steps: int | None = None
+    max_steps: int | None = Field(default=None, ge=1, le=50)
 
 
 def default_store() -> SessionStore:
@@ -99,11 +99,20 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="minicode", version=__version__)
     st = store or default_store()
-    base_workspace = Path(default_workspace or Path.cwd()).resolve()
+    # --reload 模式下 uvicorn 用 import 字符串重建 app，拿不到参数，
+    # 所以默认工作区允许从环境变量来。
+    env_workspace = os.environ.get("MINICODE_WORKSPACE", "").strip()
+    base_workspace = Path(default_workspace or env_workspace or Path.cwd()).resolve()
 
     # 每个 run 一个 asyncio.Event，用来叫醒 SSE 生成器。
     # 放 dict 里是为了让 store 保持纯数据、不掺和异步。
     changed: dict[str, asyncio.Event] = {}
+
+    # 本进程里正在跑的 run。用途：
+    #   1) 进程被杀之后，store 里那些 status=running 的 run 永远等不到 worker，
+    #      有了这份名单才能区分"真的在跑"和"僵尸" —— 僵尸允许 resume。
+    #   2) followup 不能挂到一个还在跑的 run 上（会从半截检查点分叉出并发 run）。
+    active_runs: set[str] = set()
 
     def _factory(settings_obj: Settings):
         if provider_factory is not None:
@@ -113,8 +122,9 @@ def create_app(
         return AnthropicProvider(settings_obj)
 
     def _emit(state: RunState, cs: asyncio.Event, ev: Event, loop_ref) -> None:
+        # event_count 一律由 store.append_event 维护 —— 之前这里又 +=1，
+        # 内存版 store 自己也加，导致"事件 3 条但计数 4"。
         st.append_event(state.id, {"kind": ev.kind, "ts": ev.ts, "data": ev.data})
-        state.event_count += 1
         state.updated_at = ev.ts
         try:
             loop_ref.call_soon_threadsafe(cs.set)
@@ -138,6 +148,7 @@ def create_app(
 
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
                 resume: dict | None) -> None:
+        active_runs.add(state.id)
         state.status = "running"
         st.update(state)
         rec = Recorder(on_event=lambda ev: _emit(state, cs, ev, loop_ref))
@@ -174,11 +185,18 @@ def create_app(
             state.result = result.to_dict()
             if todo is not None:
                 state.result["todos"] = todo.snapshot()
-            state.status = "done"
+            if result.stop_reason == "provider_error":
+                # 模型调用本身挂了属于基础设施错误，和"跑完了但没成功"要分开：
+                # 前者要标 error（界面会红），后者是 ok=False 的正常收尾。
+                state.error = result.error or "模型调用失败"
+                state.status = "error"
+            else:
+                state.status = "done"
         except Exception as exc:  # noqa: BLE001 - 后台线程的异常必须自己接住
             state.error = f"{type(exc).__name__}: {exc}"
             state.status = "error"
         finally:
+            active_runs.discard(state.id)
             st.update(state)
             try:
                 loop_ref.call_soon_threadsafe(cs.set)
@@ -215,13 +233,97 @@ def create_app(
             "store": type(st).__name__,
         }
 
+    def _resolve_workspace(raw: str | None) -> Path:
+        """解析并校验工作区。
+
+        为什么要校验：界面上允许手填路径，填错了不该在后台线程里炸 ——
+        那样 run 会变成 error，用户还得翻事件才能看出是路径问题。
+        """
+        if not raw or not str(raw).strip():
+            return base_workspace
+        candidate = Path(str(raw).strip()).expanduser()
+        try:
+            resolved = candidate.resolve()
+        except OSError as exc:
+            raise HTTPException(400, f"工作区路径无效: {raw}（{exc}）") from exc
+        if not resolved.is_dir():
+            raise HTTPException(400, f"工作区不存在或不是目录: {resolved}")
+        return resolved
+
+    @app.get("/workspaces")
+    def list_workspaces(limit: int = 10) -> dict:
+        """最近用过的工作区 + 默认工作区。左栏用它做下拉。
+
+        来源就是历史 run 里的 workspace —— 不额外维护一份配置，
+        免得"删了 run 但配置里还留着"这种不一致。
+        """
+        seen: list[str] = []
+        for run in sorted(st.all(), key=lambda r: r.updated_at, reverse=True):
+            if run.workspace and run.workspace not in seen:
+                seen.append(run.workspace)
+
+        items = []
+        default = str(base_workspace)
+        ordered = [default] + [p for p in seen if p != default]
+        for path in ordered[: max(1, limit)]:
+            p = Path(path)
+            items.append({
+                "path": path,
+                "name": p.name or path,
+                "exists": p.is_dir(),
+                "is_default": path == default,
+            })
+        return {"workspaces": items, "default": default}
+
+    @app.get("/conversations")
+    def list_conversations(limit: int = 60) -> dict:
+        """把 run 按 parent_id 串成"会话"，按最近活动排序。
+
+        为什么不在前端算：这个「沿着 parent_id 往上找根」的逻辑如果在界面里写，
+        数据一多每次渲染都要重复算；放后端一次算完，前端只负责画。
+        """
+        runs = st.all()
+        by_id = {r.id: r for r in runs}
+
+        def root_of(run: RunState) -> str:
+            current = run
+            seen = {current.id}
+            while current.parent_id and current.parent_id in by_id:
+                if current.parent_id in seen:
+                    break
+                current = by_id[current.parent_id]
+                seen.add(current.id)
+            return current.id
+
+        groups: dict[str, list[RunState]] = {}
+        for run in runs:
+            groups.setdefault(root_of(run), []).append(run)
+
+        out = []
+        for root_id, members in groups.items():
+            members.sort(key=lambda r: (r.created_at, r.id))
+            latest = members[-1]
+            out.append({
+                "root_id": root_id,
+                "title": (members[0].task or "").strip()[:80],
+                "workspace": members[0].workspace,
+                "run_ids": [r.id for r in members],
+                "latest_run_id": latest.id,
+                "status": latest.status,
+                "created_at": members[0].created_at,
+                "updated_at": max(r.updated_at for r in members),
+                "turns": len(members),
+            })
+        out.sort(key=lambda c: c["updated_at"], reverse=True)
+        return {"conversations": out[: max(1, limit)]}
+
     @app.post("/runs", status_code=202)
     async def create_run(req: RunRequest) -> dict:
         run_settings = _resolve_settings(req.model, req.max_steps)
         if provider_factory is None and not run_settings.api_key:
             raise HTTPException(400, "没有 API key，先把 .env 配好")
 
-        workspace = Path(req.workspace) if req.workspace else base_workspace
+        workspace = _resolve_workspace(req.workspace)
         state = RunState(
             id=new_id(),
             task=req.task,
@@ -242,8 +344,14 @@ def create_app(
         state = st.get(run_id)
         if state is None:
             raise HTTPException(404, "没有这个 run")
-        if state.status == "running":
+        if state.status == "running" and state.id in active_runs:
             raise HTTPException(409, "这个 run 还在跑，不用恢复")
+        # 走到这里说明状态是 running 但本进程没有它在跑 —— 进程被杀/重启留下的僵尸。
+        # 检查点在的话允许续跑，否则这个 run 永远救不回来。
+        if state.status == "running":
+            checkpoint = st.get_checkpoint(run_id)
+            if checkpoint is None:
+                raise HTTPException(409, "这个 run 停在 running 但没有检查点，只能重新跑")
         # done 有两种：正常收尾（result.ok=True）和步数耗尽被中断（ok=False）。
         # 前者不该再 resume —— 会在没有新用户输入的情况下再调一次模型，要接着聊请用 followup；
         # 后者正是 resume 的用途。
@@ -311,6 +419,10 @@ def create_app(
         parent = st.get(run_id)
         if parent is None:
             raise HTTPException(404, "没有这个 run")
+        if parent.status in ("running", "queued") and parent.id in active_runs:
+            # 父 run 还在跑就续聊，会从半截检查点分叉出第二个 run，
+            # 两个 run 共用同一个工作区和任务目录，互相覆盖。
+            raise HTTPException(409, "上一轮还在跑，等它结束再接着聊")
 
         text = (req.text or "").strip()
         if not text:
@@ -341,20 +453,40 @@ def create_app(
         return {"id": state.id, "parent_id": parent.id, "status": state.status}
 
     @app.get("/runs/{run_id}/events")
-    async def stream_events(run_id: str) -> StreamingResponse:
+    async def stream_events(run_id: str, request: Request) -> StreamingResponse:
         state = st.get(run_id)
         if state is None:
             raise HTTPException(404, "没有这个 run")
         cs = changed.setdefault(run_id, asyncio.Event())
 
+        # 断点续传：浏览器 EventSource 重连时会带 Last-Event-ID。
+        # 之前每次连接都从 0 重放，前端把整段事件再渲染一遍（重复计数、重复工具行）。
+        start_at = 0
+        raw_last_id = request.headers.get("last-event-id", "").strip()
+        if raw_last_id.isdigit():
+            start_at = int(raw_last_id) + 1
+
         async def gen():
-            sent = 0
+            sent = start_at
+            yield "retry: 3000\n\n"
             while True:
                 for ev in st.read_events(run_id, sent):
                     sent += 1
-                    yield f"event: {ev['kind']}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                    # id 用事件序号，客户端重连时靠它告诉我们从哪继续
+                    yield (f"id: {sent - 1}\nevent: {ev['kind']}\n"
+                           f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
                 fresh = st.get(run_id)
                 if fresh is not None and fresh.status in ("done", "error"):
+                    # 先把手上的事件补发干净：从"读事件"到"查状态"之间可能又追加了几条，
+                    # 直接发 end 会让客户端少最后几条（实测能丢 finish/model_call）。
+                    while True:
+                        rest = st.read_events(run_id, sent)
+                        if not rest:
+                            break
+                        for ev in rest:
+                            sent += 1
+                            yield (f"id: {sent - 1}\nevent: {ev['kind']}\n"
+                                   f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
                     # 收尾事件也必须和别的事件同一个形状（kind / ts / data）。
                     # 之前这里直接发 {status, result, error}，少了外面那层，
                     # 前端就把它当普通事件渲染，结果画出一个空 JSON，

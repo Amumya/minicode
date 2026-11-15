@@ -24,6 +24,23 @@ from pathlib import Path
 DEFAULT_REDIS_PORT = 6380
 
 
+def redis_alive(url: str, timeout: float = 0.5) -> bool:
+    """端口通不代表真的是 Redis —— 6380 被别的服务占着也会 TCP 成功。
+
+    只用 redis-py（已经是依赖），拿不到就退化成"端口通就算活"。
+    """
+    try:
+        import redis as redis_lib
+    except ImportError:
+        return True
+    try:
+        client = redis_lib.Redis.from_url(url, socket_connect_timeout=timeout,
+                                          socket_timeout=timeout, protocol=2)
+        return bool(client.ping())
+    except Exception:  # noqa: BLE001 - 任何异常都当成"不是可用 Redis"
+        return False
+
+
 def port_open(host: str, port: int, timeout: float = 0.3) -> bool:
     """端口上有没有人在听。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -71,7 +88,8 @@ def ensure_redis(root: Path, *, port: int = DEFAULT_REDIS_PORT,
 
     url = redis_url(port)
     if port_open("127.0.0.1", port):
-        return None, url
+        # 端口在听还要确认是 Redis：否则会把别的服务当成缓存，现象离根因很远
+        return None, (url if redis_alive(url) else None)
 
     server = find_bundled_redis(root)
     if server is None:
@@ -85,12 +103,13 @@ def ensure_redis(root: Path, *, port: int = DEFAULT_REDIS_PORT,
 
     deadline = time.time() + 10
     while time.time() < deadline:
-        if port_open("127.0.0.1", port):
+        if port_open("127.0.0.1", port) and redis_alive(url):
             return proc, url
         if proc.poll() is not None:
             return None, None
         time.sleep(0.15)
-    return proc, url
+    # 超时：不能假装成功，否则服务端连不上 Redis 而提示是"已启动"
+    return None, None
 
 
 def stop(proc: subprocess.Popen | None) -> None:

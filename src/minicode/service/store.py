@@ -75,6 +75,10 @@ class SessionStore(Protocol):
     def get_checkpoint(self, run_id: str) -> dict | None: ...
 
 
+# 两种 store 的 all() 必须返回同样的上限，否则同一份数据在两种后端下行为不同
+ALL_LIMIT = 200
+
+
 def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
@@ -212,7 +216,7 @@ class RedisStore:
         )
 
     def all(self) -> list[RunState]:
-        ids = self._r.zrevrange(self._k_index(), 0, 99)
+        ids = self._r.zrevrange(self._k_index(), 0, ALL_LIMIT - 1)
         runs = [self.get(rid) for rid in ids]
         return [r for r in runs if r is not None]
 
@@ -224,8 +228,13 @@ class RedisStore:
         }
         if run.result is not None:
             mapping["result"] = json.dumps(run.result, ensure_ascii=False)
+        else:
+            # 必须显式删掉：否则 resume 之后 GET 还会返回上一轮的 result
+            self._r.hdel(self._k_run(run.id), "result")
         if run.error is not None:
             mapping["error"] = run.error
+        else:
+            self._r.hdel(self._k_run(run.id), "error")
         self._r.hset(self._k_run(run.id), mapping=mapping)
         self._touch(self._k_run(run.id))
 

@@ -4,94 +4,88 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>minicode</title>
-    <!-- 空的 favicon：不写这行，浏览器会去请求 /favicon.ico 然后控制台报 404 -->
     <link rel="icon" href="data:," />
-    <script type="module" crossorigin src="./assets/index-2VzJg9lL.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-m4z4WlOl.css">
+    <script type="module" crossorigin src="./assets/index-BLDVMT_J.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DO2yvlUJ.css">
   </head>
   <body>
-    <header>
-      <h1>minicode</h1>
-      <span id="store" class="muted"></span>
-      <span id="usage" class="usage muted"></span>
-    </header>
+    <div class="app">
+      <!-- 左栏：工作区 + 会话列表 -->
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="logo">m</span>
+          <span>minicode</span>
+        </div>
 
-    <main>
-      <section class="panel">
-        <label for="task">任务</label>
-        <textarea id="task" rows="3" placeholder="例如：数一下 src 下有几个 py 文件"></textarea>
+        <div class="workspace">
+          <div class="workspace-head">
+            <label for="workspace">工作区</label>
+            <button id="refreshWs" class="icon" title="刷新工作区列表">↻</button>
+          </div>
+          <select id="workspace"></select>
+          <input id="workspaceCustom" class="custom" placeholder="或填一个路径…" />
+        </div>
 
-        <div class="row wrap">
-          <label class="inline">
-            模型
-            <select id="model">
-              <option value="">默认</option>
+        <button id="newChat" class="new-chat">＋ 新会话</button>
+
+        <nav id="conversations" class="conversations" aria-label="历史会话">
+          <p class="muted hint">还没有会话</p>
+        </nav>
+
+        <footer class="sidebar-foot">
+          <span id="storeInfo" class="muted"></span>
+        </footer>
+      </aside>
+
+      <!-- 右侧：对话主区 -->
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-title">
+            <span id="title">新会话</span>
+            <span id="runStatus" class="badge" role="status" aria-live="polite" hidden></span>
+          </div>
+          <div id="usage" class="usage muted"></div>
+        </header>
+
+        <section id="chat" class="chat">
+          <div class="empty" id="empty">
+            <p class="empty-title">开始一个新任务</p>
+            <p class="muted">在下面输入，或者在左侧选一个历史会话。</p>
+            <div class="examples">
+              <button class="example" data-task="数一下 src 下有多少 py 文件">数一下 src 下有多少 py 文件</button>
+              <button class="example" data-task="看一下 README，用三句话总结这个项目">用三句话总结这个项目</button>
+              <button class="example" data-task="找出 tests 里覆盖最少的一个模块">找出覆盖最少的模块</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="composer">
+          <div class="options" id="options">
+            <select id="model" title="模型">
+              <option value="">默认模型</option>
               <option value="deepseek-flash">deepseek-flash</option>
               <option value="deepseek-v4-pro">deepseek-v4-pro</option>
             </select>
-          </label>
-          <label class="inline">
-            最大步数
-            <input id="maxSteps" type="number" min="1" max="30" value="8" />
-          </label>
-          <span class="sep"></span>
-          <label class="inline check"><input id="optFiles" type="checkbox" /> 文件工具</label>
-          <label class="inline check"><input id="optPlan" type="checkbox" /> 计划</label>
-          <label class="inline check"><input id="optSkills" type="checkbox" /> 技能</label>
-          <label class="inline check"><input id="optCompact" type="checkbox" /> 压缩</label>
-          <label class="inline check"><input id="optTasks" type="checkbox" /> 任务图</label>
-        </div>
-
-        <div class="row">
-          <button id="submit">提交</button>
-          <button id="newChat" class="ghost" hidden>新会话</button>
-          <span id="status" class="muted"></span>
-        </div>
-      </section>
-
-      <section class="panel" id="answerPanel" hidden>
-        <div class="row between">
-          <h2>结果</h2>
-          <button id="resume" class="ghost" hidden>继续跑</button>
-        </div>
-        <div id="answerMeta" class="usage"></div>
-        <pre id="answer"></pre>
-      </section>
-
-      <section class="panel" id="planPanel" hidden>
-        <div class="row between">
-          <h2>计划</h2>
-          <span id="planProgress" class="muted"></span>
-        </div>
-        <ol id="plan" class="plan"></ol>
-      </section>
-
-      <section class="panel" id="boardPanel" hidden>
-        <div class="row between">
-          <h2>任务看板</h2>
-          <span id="boardProgress" class="muted"></span>
-        </div>
-        <div id="board" class="board"></div>
-      </section>
-
-      <section class="panel">
-        <div class="row between">
-          <h2>事件</h2>
-          <div class="filters" id="filters">
-            <button data-filter="all" class="chip active">全部</button>
-            <button data-filter="tools" class="chip">工具</button>
-            <button data-filter="model" class="chip">模型</button>
-            <button data-filter="problems" class="chip">只看问题</button>
+            <label title="最大步数">步数<input id="maxSteps" type="number" min="1" max="50" value="8" /></label>
+            <span class="divider"></span>
+            <label class="check"><input id="optFiles" type="checkbox" /> 文件工具</label>
+            <label class="check"><input id="optPlan" type="checkbox" /> 计划</label>
+            <label class="check"><input id="optSkills" type="checkbox" /> 技能</label>
+            <label class="check"><input id="optCompact" type="checkbox" /> 压缩</label>
+            <label class="check"><input id="optTasks" type="checkbox" /> 任务图</label>
           </div>
-        </div>
-        <div id="events" class="events"><p class="muted">还没有任务。</p></div>
-      </section>
-
-      <section class="panel">
-        <h2>历史</h2>
-        <ul id="history" class="history"><li class="muted">（空）</li></ul>
-      </section>
-    </main>
+          <div class="input-row">
+            <label for="task" class="sr-only">任务内容</label>
+            <textarea id="task" rows="2" placeholder="描述任务，Ctrl+Enter 发送"></textarea>
+            <button id="submit">发送</button>
+          </div>
+          <div class="composer-foot">
+            <span id="status" class="muted" role="status" aria-live="polite"></span>
+            <button id="resume" class="link" hidden>继续跑</button>
+          </div>
+        </section>
+      </main>
+    </div>
 
   </body>
 </html>
