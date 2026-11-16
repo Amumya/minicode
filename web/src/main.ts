@@ -15,13 +15,22 @@ import {
 } from "./api.ts";
 import {
   buildTurns,
+  mergeDeltaEvents,
   groupByDay,
   shortTitle,
   statusTone,
   type Turn,
 } from "./chat.ts";
 import { describeEvent } from "./format.ts";
-import { buildTaskBoard, formatUsage } from "./derive.ts";
+import {
+  buildTaskBoard,
+  formatUsage,
+  latestPlan,
+  summarizeUsage,
+  type PlanItem,
+} from "./derive.ts";
+import { describeToolCall, type ToolCallView } from "./chat.ts";
+import { renderMarkdown } from "./markdown.ts";
 import type { AgentEvent } from "./format.ts";
 
 /* ------------------------------------------------------------------ 小工具 */
@@ -116,19 +125,23 @@ const main = {
 把展开状态按"轮次+区块"记在内存里，重画后恢复。
 */
 
-const openDetails = new Set<string>();
+const detailsState = new Map<string, boolean>();
 
 function detailsBlock(
   key: string,
   cls: string,
   summaryText: string,
   build: () => HTMLElement | null,
+  defaultOpen = false,
 ): HTMLElement {
   const node = h("details", { class: cls });
-  node.open = openDetails.has(key);
+  const initialOpen = detailsState.has(key) ? detailsState.get(key)! : defaultOpen;
+  node.open = initialOpen;
+  // 只记录"和初始状态不同"的切换。
+  // 直接监听 toggle 会把它自己的初始设置也当成用户操作（代码设 open=true 同样触发 toggle），
+  // 结果"结束后自动收起"永远不生效 —— 这是实测踩到的。
   node.addEventListener("toggle", () => {
-    if (node.open) openDetails.add(key);
-    else openDetails.delete(key);
+    if (node.open !== initialOpen) detailsState.set(key, node.open);
   });
   node.append(h("summary", {}, summaryText));
   const body = build();
@@ -212,27 +225,52 @@ function renderConversations(): void {
 
 /* ------------------------------------------------------------------ 对话区 */
 
-function renderTools(turn: Turn, live: boolean): HTMLElement | null {
+/** 一条工具调用对应的 DOM。历史和实时共用，保证两边长得一样。 */
+function toolRow(tool: ToolCallView): HTMLElement {
+  const li = h("li", { class: tool.ok ? "tool" : "tool failed" });
+  const head = h("div", { class: "tool-head" });
+  head.append(h("code", { class: "tool-name" }, tool.tool));
+  if (tool.exitCode !== undefined) {
+    head.append(
+      h("span", { class: `tool-exit ${tool.ok ? "ok" : "error"}` },
+        tool.exitCode === 0 ? "exit 0" : `exit ${tool.exitCode}`),
+    );
+  }
+  li.append(head);
+  if (tool.summary) {
+    const cmd = h("pre", { class: "tool-command" }, tool.summary);
+    cmd.title = tool.summary;
+    li.append(cmd);
+  }
+  if (tool.output) li.append(h("pre", { class: "tool-output" }, tool.output));
+  return li;
+}
+
+/** 一条原始事件对应的 DOM。 */
+function eventRow(ev: AgentEvent): HTMLElement {
+  const d = describeEvent(ev);
+  const row = h("div", { class: `event tone-${d.tone}` });
+  row.append(h("span", { class: "event-label" }, d.label));
+  row.append(h("span", { class: "event-detail" }, d.detail));
+  return row;
+}
+
+function renderTools(turn: Turn, live: boolean, defaultOpen: boolean): HTMLElement | null {
   if (turn.tools.length === 0 && turn.denied === 0) return null;
   const failed = turn.tools.filter((t) => !t.ok).length;
   const text =
-    `过程：工具 ${turn.tools.length} 次` +
+    `思考：工具 ${turn.tools.length} 次` +
     (failed ? `（失败 ${failed}）` : "") +
     (turn.denied ? ` · 被拒 ${turn.denied}` : "");
   return detailsBlock(`${turn.runId}:tools`, "process", text, () => {
     const list = h("ul", { class: "tool-list" });
-    for (const tool of turn.tools) {
-      const li = h("li", { class: tool.ok ? "tool" : "tool failed" });
-      li.append(h("code", { class: "tool-name" }, tool.tool));
-      li.append(h("span", { class: "tool-summary" }, tool.summary || "（无参数摘要）"));
-      list.append(li);
-    }
+    for (const tool of turn.tools) list.append(toolRow(tool));
     if (live) list.append(h("li", { class: "muted" }, "…还在跑"));
     return list;
-  });
+  }, defaultOpen);
 }
 
-function renderPlan(turn: Turn): HTMLElement | null {
+function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
   if (!turn.plan || turn.plan.length === 0) return null;
   const done = turn.plan.filter((p) => p.status === "completed").length;
   return detailsBlock(`${turn.runId}:plan`, "plan", `计划：${done}/${turn.plan.length} 完成`, () => {
@@ -246,7 +284,7 @@ function renderPlan(turn: Turn): HTMLElement | null {
       ol.append(li);
     }
     return ol;
-  });
+  }, defaultOpen);
 }
 
 /** 任务图看板：展开时才去拉数据（历史会话不会白拉一堆 /tasks）。 */
@@ -296,20 +334,21 @@ function renderBoard(turn: Turn): HTMLElement | null {
 
 function renderRawEvents(runId: string, events: AgentEvent[]): HTMLElement | null {
   if (events.length === 0) return null;
-  return detailsBlock(`${runId}:raw`, "raw", `原始事件：${events.length} 条`, () => {
+  const merged = mergeDeltaEvents(events);
+  return detailsBlock(`${runId}:raw`, "raw", `原始事件：${merged.length} 条`, () => {
     const list = h("div", { class: "event-list" });
-    for (const ev of events) {
-      const d = describeEvent(ev);
-      const row = h("div", { class: `event tone-${d.tone}` });
-      row.append(h("span", { class: "event-label" }, d.label));
-      row.append(h("span", { class: "event-detail" }, d.detail));
-      list.append(row);
-    }
+    for (const ev of merged) list.append(eventRow(ev));
     return list;
   });
 }
 
-function renderTurn(turn: Turn, events: AgentEvent[], live: boolean): HTMLElement {
+function renderTurn(
+  turn: Turn,
+  events: AgentEvent[],
+  live: boolean,
+  streamingText = "",
+  defaultOpen = false,
+): HTMLElement {
   const wrap = h("div", { class: `turn${live ? " live" : ""}` });
 
   const user = h("div", { class: "msg user" });
@@ -321,22 +360,12 @@ function renderTurn(turn: Turn, events: AgentEvent[], live: boolean): HTMLElemen
   assistant.append(h("div", { class: "avatar" }, "m"));
   const bubble = h("div", { class: "bubble" });
 
-  if (turn.error) {
-    bubble.append(h("div", { class: "answer error" }, `出错：${turn.error}`));
-  } else if (turn.answer) {
-    bubble.append(h("div", { class: "answer" }, turn.answer));
-  } else if (live || turn.status === "running" || turn.status === "queued") {
-    bubble.append(h("div", { class: "answer thinking" }, "运行中…"));
-  } else if (!turn.ok && turn.status === "error") {
-    bubble.append(h("div", { class: "answer error" }, "运行出错（详情看下面的事件）"));
-  } else if (!turn.ok && turn.status === "done") {
-    bubble.append(h("div", { class: "answer muted" }, "没跑完（步数用尽或中断）"));
-  }
-
-  const plan = renderPlan(turn);
-  if (plan) bubble.append(plan);
-  const tools = renderTools(turn, live);
+  // 顺序很重要：**思考过程放前面、结果放最后**。
+  // 反过来（结果在上）时，一旦展开工具列表，看结果就得往回滚 —— 用户反馈过这个。
+  const tools = renderTools(turn, live, defaultOpen);
   if (tools) bubble.append(tools);
+  const plan = renderPlan(turn, defaultOpen);
+  if (plan) bubble.append(plan);
   const board = renderBoard(turn);
   if (board) bubble.append(board);
   const raw = renderRawEvents(turn.runId, events);
@@ -346,24 +375,251 @@ function renderTurn(turn: Turn, events: AgentEvent[], live: boolean): HTMLElemen
     bubble.append(h("div", { class: "turn-usage muted" }, formatUsage(turn.usage)));
   }
 
+  // 结果固定在气泡最后一块
+  if (turn.error) {
+    bubble.append(h("div", { class: "answer error" }, `出错：${turn.error}`));
+  } else if (turn.answer) {
+    bubble.append(h("div", { class: "answer-label" }, "结果"));
+    // 模型输出是 Markdown，渲染成 DOM（不用 innerHTML，天然没有注入面）
+    const answerNode = h("div", { class: "answer markdown" });
+    answerNode.append(renderMarkdown(turn.answer));
+    bubble.append(answerNode);
+  } else if (streamingText) {
+    // 流式输出：模型还在吐字，先把已经收到的显示出来
+    const live_answer = h("div", { class: "answer streaming" }, streamingText);
+    live_answer.append(h("span", { class: "cursor" }));
+    bubble.append(live_answer);
+  } else if (live || turn.status === "running" || turn.status === "queued") {
+    bubble.append(h("div", { class: "answer thinking" }, "运行中…"));
+  } else if (!turn.ok && turn.status === "error") {
+    bubble.append(h("div", { class: "answer error" }, "运行出错（详情看上面的事件）"));
+  } else if (!turn.ok && turn.status === "done") {
+    bubble.append(h("div", { class: "answer muted" }, "没跑完（步数用尽或中断）"));
+  }
+
   assistant.append(bubble);
   wrap.append(assistant);
   return wrap;
+}
+
+/* ------------------------------------------------------------------ 实时增量渲染
+
+为什么单独一套：每来一个事件就重建整个对话区，会有两个问题 ——
+    1. 展开的折叠区被重建，等于被关掉（用户正在看的内容消失）
+    2. 整块重绘导致闪一下，长任务里每跳一步都闪
+所以"正在跑的那一轮"单独维护一份 DOM 引用，事件来了只追加变化的那一行。
+*/
+
+interface LiveView {
+  runId: string;
+  processSummary: HTMLElement;
+  toolList: HTMLUListElement;
+  runningHint: HTMLLIElement;
+  planHost: HTMLElement;
+  rawSummary: HTMLElement;
+  rawList: HTMLDivElement;
+  usageEl: HTMLElement;
+  answerEl: HTMLElement;
+  toolCount: number;
+  denied: number;
+  rawRows: number;
+  deltaText: string;
+  deltaRow: HTMLElement | null;
+  deltaDetail: HTMLElement | null;
+}
+
+let liveView: LiveView | null = null;
+
+function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
+  const wrap = h("div", { class: "turn live" });
+
+  const user = h("div", { class: "msg user" });
+  user.append(h("div", { class: "avatar" }, "你"));
+  user.append(h("div", { class: "bubble" }, turn.task));
+  wrap.append(user);
+
+  const assistant = h("div", { class: "msg assistant" });
+  assistant.append(h("div", { class: "avatar" }, "m"));
+  const bubble = h("div", { class: "bubble" });
+
+  const processDetail = h("details", { class: "process" });
+  processDetail.open = true;                       // 跑的时候展开，方便看进度
+  const processSummary = h("summary", {}, "思考：工具 0 次");
+  const toolList = h("ul", { class: "tool-list" });
+  const runningHint = h("li", { class: "muted" }, "…正在跑");
+  toolList.append(runningHint);
+  processDetail.append(processSummary, toolList);
+
+  const planHost = h("div", { class: "plan-host" });
+
+  const board = renderBoard(turn);
+  if (board) bubble.append(board);
+
+  const rawDetail = h("details", { class: "raw" });
+  const rawSummary = h("summary", {}, "原始事件：0 条");
+  const rawList = h("div", { class: "event-list" });
+  rawDetail.append(rawSummary, rawList);
+
+  const usageEl = h("div", { class: "turn-usage muted" });
+  const answerLabel = h("div", { class: "answer-label" }, "结果");
+  answerLabel.hidden = true;
+  const answerEl = h("div", { class: "answer streaming markdown" });
+
+  bubble.append(processDetail, planHost, rawDetail, usageEl, answerLabel, answerEl);
+  assistant.append(bubble);
+  wrap.append(assistant);
+
+  const view: LiveView = {
+    runId: turn.runId,
+    processSummary,
+    toolList,
+    runningHint,
+    planHost,
+    rawSummary,
+    rawList,
+    usageEl,
+    answerEl,
+    toolCount: 0,
+    denied: 0,
+    rawRows: 0,
+    deltaText: "",
+    deltaRow: null,
+    deltaDetail: null,
+  };
+  return { el: wrap, view };
+}
+
+/** 流式过程中也做 Markdown 渲染：只替换答案区，避免看到原始 ** 符号。 */
+function renderLiveAnswer(view: LiveView): void {
+  const frag = renderMarkdown(view.deltaText);
+  frag.append(h("span", { class: "cursor" }));
+  view.answerEl.replaceChildren(frag);
+}
+
+function liveProcessSummary(view: LiveView): void {
+  view.processSummary.textContent =
+    `思考：工具 ${view.toolCount} 次` + (view.denied ? ` · 被拒 ${view.denied}` : "");
+}
+
+function appendRawRow(view: LiveView, ev: AgentEvent): void {
+  view.rawList.append(eventRow(ev));
+  view.rawRows += 1;
+  view.rawSummary.textContent = `原始事件：${view.rawRows} 条`;
+}
+
+/** 重建计划那一段（只有 todo 变化时才调）。 */
+function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
+  if (!plan || plan.length === 0) return;
+  const done = plan.filter((x) => x.status === "completed").length;
+  let detail = view.planHost.querySelector("details.plan") as HTMLDetailsElement | null;
+  let list: HTMLOListElement;
+  if (!detail) {
+    detail = h("details", { class: "plan" });
+    const summary = h("summary");
+    list = h("ol", { class: "plan-list" });
+    detail.append(summary, list);
+    view.planHost.append(detail);
+  } else {
+    list = detail.querySelector("ol.plan-list") as HTMLOListElement;
+  }
+  (detail.querySelector("summary") as HTMLElement).textContent =
+    `计划：${done}/${plan.length} 完成`;
+  list.replaceChildren();
+  for (const item of plan) {
+    const li = h("li", { class: `plan-item status-${item.status}` });
+    li.textContent = item.content;
+    if (item.blockedBy?.length) {
+      li.append(h("span", { class: "blocked-by" }, `等 ${item.blockedBy.join(",")}`));
+    }
+    list.append(li);
+  }
+}
+
+/** 把一个事件增量地反映到实时视图上。**不重建任何已有节点。** */
+function applyLiveEvent(ev: AgentEvent, silent = false): void {
+  const view = liveView;
+  if (!view) return;
+
+  if (ev.kind === "assistant_delta") {
+    const chunk = String(((ev.data ?? {}) as Record<string, unknown>).text ?? "");
+    view.deltaText += chunk;
+    renderLiveAnswer(view);
+    if (!view.deltaRow) {
+      view.deltaRow = h("div", { class: "event tone-info" });
+      view.deltaRow.append(h("span", { class: "event-label" }, "思考"));
+      view.deltaDetail = h("span", { class: "event-detail" }, view.deltaText.slice(0, 60));
+      view.deltaRow.append(view.deltaDetail);
+      view.rawList.append(view.deltaRow);
+      view.rawRows += 1;
+      view.rawSummary.textContent = `原始事件：${view.rawRows} 条`;
+    } else if (view.deltaDetail) {
+      view.deltaDetail.textContent = view.deltaText.slice(0, 60);
+    }
+  } else if (ev.kind === "tool_call") {
+    view.toolCount += 1;
+    view.toolList.insertBefore(toolRow(describeToolCall(ev)), view.runningHint);
+    liveProcessSummary(view);
+    if (!silent) renderLivePlan(view, latestPlan(liveEvents));
+    appendRawRow(view, ev);
+  } else if (ev.kind === "denied") {
+    view.denied += 1;
+    liveProcessSummary(view);
+    appendRawRow(view, ev);
+  } else {
+    appendRawRow(view, ev);
+  }
+
+  view.usageEl.textContent = formatUsage(summarizeUsage(liveEvents));
+  if (!silent) {
+    updateTopbarUsage();
+    scrollToBottomIfNearBottom();
+  }
+}
+
+/** 从侧栏/刷新恢复时，把已有事件灌进视图（不滚屏、不改顶栏）。 */
+function replayIntoLiveView(events: AgentEvent[], plan: PlanItem[] | null = null): void {
+  for (const ev of events) applyLiveEvent(ev, true);
+  if (plan) renderLivePlan(liveView as LiveView, plan);
+  updateTopbarUsage();
+}
+
+/** 顶栏总用量：历史各轮 + 正在跑的这一轮。 */
+function updateTopbarUsage(): void {
+  const zero = {
+    steps: 0, inputTokens: 0, outputTokens: 0, toolCalls: 0,
+    denied: 0, failures: 0, compactions: 0, savedChars: 0, elapsedMs: 0,
+  };
+  const total = { ...zero };
+  for (const run of runs) {
+    const u = summarizeUsage(run.events ?? []);
+    for (const key of Object.keys(zero) as (keyof typeof zero)[]) {
+      total[key] += u[key];
+    }
+  }
+  main.usage.textContent = total.steps ? formatUsage(total) : "";
 }
 
 function renderChat(): void {
   renderQueued = false;
   const turns = buildTurns(runs);
   main.chat.replaceChildren();
+  liveView = null;
   const hasContent = turns.length > 0 || liveRun !== null;
   if (hasContent) {
     main.empty.hidden = true;
-    for (const turn of turns) {
+    turns.forEach((turn) => {
       const run = runs.find((r) => r.id === turn.runId);
       const isLive = liveRun?.id === turn.runId;
-      const events = isLive ? liveEvents : (run?.events ?? []);
-      main.chat.append(renderTurn(turn, events, isLive));
-    }
+      if (isLive) {
+        const { el, view } = buildLiveTurn(turn);
+        liveView = view;
+        replayIntoLiveView(liveEvents, turn.plan);
+        main.chat.append(el);
+        return;
+      }
+      const events = run?.events ?? [];
+      main.chat.append(renderTurn(turn, events, false, "", false));
+    });
   } else {
     main.empty.hidden = false;
     main.chat.append(main.empty);
@@ -422,6 +678,13 @@ function render(): void {
 
 function scrollToBottom(): void {
   main.chat.scrollTop = main.chat.scrollHeight;
+}
+
+/** 只有用户本来就在底部时才自动跟随，免得他往回翻看的时候被拽走。 */
+function scrollToBottomIfNearBottom(): void {
+  const el = main.chat;
+  const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  if (near) el.scrollTop = el.scrollHeight;
 }
 
 /* ------------------------------------------------------------------ 数据加载 */
@@ -501,7 +764,8 @@ function attachStream(run: RunRow): void {
       liveEvents = [...liveEvents, ev];
       const current = runs.find((r) => r.id === run.id);
       if (current) current.events = liveEvents;
-      render();
+      // 只更新变化的那一行，不重建整个对话区（rebuild 会让每跳一步都闪一下）
+      applyLiveEvent(ev);
     },
     (_kind, ev) => {
       const data = (ev.data ?? {}) as Record<string, unknown>;

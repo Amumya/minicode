@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import subprocess
 import sys
@@ -109,6 +110,17 @@ def collect_files() -> list[tuple[str, bytes]]:
     return sorted(files, key=lambda x: x[0])
 
 
+def git_blob_sha(raw: bytes) -> str:
+    """算出 git 的 blob sha（sha1 of "blob <len>\0<content>"）。
+
+    有了它就能和远端树里的 sha 比对，**没变的文件直接复用**，
+    不用每个文件都调一次 POST /git/blobs —— 网络慢的时候这一步是关键
+    （实测一次请求 10 秒，全量 150 个文件要 25 分钟）。
+    """
+    header = b"blob " + str(len(raw)).encode() + b"\x00"
+    return hashlib.sha1(header + raw).hexdigest()
+
+
 def as_blob_payload(raw: bytes) -> dict:
     """文本走 utf-8，二进制走 base64。"""
     try:
@@ -178,12 +190,32 @@ def main() -> int:
         print("✅ 已创建初始提交（空仓库 bootstrap）")
         ref = cli.call("GET", f"{repo_path}/git/ref/heads/main")
 
-    # 3) 上传 blob
+    # 3) 上传 blob（远端已有相同内容的直接复用，只传改动过的）
+    remote_shas: dict[str, str] = {}
+    try:
+        ref0 = cli.call("GET", f"{repo_path}/git/ref/heads/main")
+        head = cli.call("GET", f"{repo_path}/git/commits/{ref0['object']['sha']}")
+        tree_data = cli.call("GET", f"{repo_path}/git/trees/{head['tree']['sha']}?recursive=1")
+        remote_shas = {
+            item["path"]: item["sha"]
+            for item in tree_data.get("tree", [])
+            if item.get("type") == "blob"
+        }
+    except Exception:  # noqa: BLE001 - 拿不到远端树就退回全量上传
+        remote_shas = {}
+
     tree_items = []
+    uploaded = reused = 0
     for rel, raw in files:
+        local_sha = git_blob_sha(raw)
+        if remote_shas.get(rel) == local_sha:
+            tree_items.append({"path": rel, "mode": "100644", "type": "blob", "sha": local_sha})
+            reused += 1
+            continue
         blob = cli.call("POST", f"{repo_path}/git/blobs", as_blob_payload(raw))
         tree_items.append({"path": rel, "mode": "100644", "type": "blob", "sha": blob["sha"]})
-    print(f"✅ 已上传 {len(tree_items)} 个 blob")
+        uploaded += 1
+    print(f"✅ blob：复用 {reused} 个，上传 {uploaded} 个")
 
     # 4) 建 tree
     tree_payload: dict = {"tree": tree_items}

@@ -6,6 +6,7 @@ import {
   buildTurn,
   buildTurns,
   describeToolCall,
+  mergeDeltaEvents,
   groupByDay,
   shortTitle,
   statusTone,
@@ -131,4 +132,60 @@ test("shortTitle 截断和空值", () => {
   assert.equal(shortTitle("  多   个   空格  "), "多 个 空格");
   assert.equal(shortTitle(""), "(空任务)");
   assert.equal(shortTitle("x".repeat(40)).length, 29);
+});
+
+
+test("describeToolCall 带上退出码和输出预览", () => {
+  const view = describeToolCall(ev("tool_call", {
+    tool: "bash",
+    args: { command: "Get-ChildItem tests" },
+    exit_code: 0,
+    failed: false,
+    output: "test_a.py\ntest_b.py",
+  }));
+  assert.equal(view.exitCode, 0);
+  assert.equal(view.output, "test_a.py\ntest_b.py");
+});
+
+test("describeToolCall 没输出时 output 为 undefined", () => {
+  const view = describeToolCall(ev("tool_call", { tool: "bash", args: { command: "x" } }));
+  assert.equal(view.output, undefined);
+});
+
+test("describeToolCall 失败时带非零退出码", () => {
+  const view = describeToolCall(ev("tool_call", {
+    tool: "bash", args: { command: "exit 1" }, exit_code: 1, failed: true, output: "boom",
+  }));
+  assert.equal(view.ok, false);
+  assert.equal(view.exitCode, 1);
+});
+
+
+test("mergeDeltaEvents 把连续增量合并成一条", () => {
+  const events = [
+    ev("model_call", { step: 1 }),
+    ev("assistant_delta", { text: "你" }),
+    ev("assistant_delta", { text: "好" }),
+    ev("assistant_delta", { text: "！" }),
+    ev("end", { status: "done" }),
+  ];
+  const merged = mergeDeltaEvents(events);
+  assert.equal(merged.length, 3);
+  assert.equal(merged[1].kind, "assistant_delta");
+  assert.equal((merged[1].data as Record<string, unknown>).text, "你好！");
+});
+
+test("mergeDeltaEvents 不相邻的增量分开合并", () => {
+  const events = [
+    ev("assistant_delta", { text: "A" }),
+    ev("model_call", { step: 1 }),
+    ev("assistant_delta", { text: "B" }),
+  ];
+  const merged = mergeDeltaEvents(events);
+  assert.equal(merged.length, 3);
+});
+
+test("mergeDeltaEvents 没有增量时原样返回", () => {
+  const events = [ev("start", {}), ev("end", { status: "done" })];
+  assert.deepEqual(mergeDeltaEvents(events).map((e) => e.kind), ["start", "end"]);
 });

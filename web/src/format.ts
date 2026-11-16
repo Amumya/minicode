@@ -75,6 +75,9 @@ export function describeEvent(ev: AgentEvent): Described {
         tone: "info",
       };
     }
+    case "assistant_delta":
+      // 增量事件只在流式时出现；原始事件列表里只显示一小段，别把每条都铺开
+      return { label: "思考", detail: clip(str(d.text), 60), tone: "info" };
     case "tool_call": {
       const args = asRecord(d.args);
       const target = str(args.command) || str(args.path) || "";

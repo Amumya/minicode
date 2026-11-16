@@ -202,3 +202,32 @@ def test_shell_write_inside_workspace_allowed():
 ])
 def test_normal_commands_still_allowed(command):
     assert not denied(command), f"正常命令被误杀: {command}"
+
+
+# ------------------------------------------------------------------ 9. 跨平台一致性
+
+
+def test_system_path_matches_windows_style_on_any_platform():
+    """CI 跑在 Linux 上，但规则要能识别 Windows 路径 —— 否则同一份配置在两边结论不同。"""
+    from minicode.policy import _is_system_path
+
+    assert _is_system_path(r"C:\Windows\x.txt")
+    assert _is_system_path("c:/windows/x.txt")
+    assert _is_system_path("C:\\Windows")
+    assert not _is_system_path(r"D:\work\a.txt")
+
+
+def test_outside_workspace_treats_windows_abs_as_outside_on_posix(monkeypatch):
+    """POSIX 上遇到 `C:\\stolen` 不能当成相对路径（那会算成"在工作区里"）。"""
+    import minicode.policy as policy
+
+    monkeypatch.setattr(policy.os, "name", "posix")
+    assert policy._outside_workspace(r"C:\stolen\a.txt", WS)
+    assert policy._outside_workspace(r"D:\stolen", WS)
+
+
+def test_normalize_path_text():
+    from minicode.policy import _normalize_path_text
+
+    assert _normalize_path_text(r"C:\Windows\x") == "c:/windows/x"
+    assert _normalize_path_text("C:/Windows/x") == "c:/windows/x"

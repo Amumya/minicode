@@ -234,14 +234,27 @@ def _is_dangerous_target(target: str) -> bool:
     return False
 
 
+def _normalize_path_text(text: str) -> str:
+    """统一成小写 + 正斜杠。
+
+    为什么必须做：判定要跨平台一致 —— CI 跑在 Linux 上，但测试里会传
+    `C:\\Windows\\x.txt` 这种 Windows 路径。原来用 os.sep 拼分隔符，
+    在 Linux 上只检查 "/"，"c:\\windows\\x.txt" 就永远匹配不上。
+    """
+    return text.replace("\\\\", "/").replace("\\", "/").lower()
+
+
+_WIN_ABS = re.compile(r"^[a-zA-Z]:[\\/]")
+
+
 def _is_system_path(target: str) -> bool:
-    raw = _strip_quotes(target).strip().lower().replace("\\\\", "\\")
-    expanded = _expand(target).strip().lower().replace("\\\\", "\\")
-    for candidate in (raw, expanded):
-        if not candidate:
+    for candidate in (_strip_quotes(target), _expand(target)):
+        norm = _normalize_path_text(candidate.strip()).rstrip("/")
+        if not norm:
             continue
         for prefix in SYSTEM_PATHS:
-            if candidate == prefix or candidate.startswith(prefix + os.sep) or candidate.startswith(prefix + "/"):
+            norm_prefix = _normalize_path_text(prefix).rstrip("/")
+            if norm == norm_prefix or norm.startswith(norm_prefix + "/"):
                 return True
     return False
 
@@ -249,8 +262,13 @@ def _is_system_path(target: str) -> bool:
 def _outside_workspace(target: str, workspace: Path) -> bool:
     if not target or target.startswith("-"):
         return False
+    expanded = _expand(target)
+    # Windows 绝对路径在 POSIX 上一定不在工作区里。
+    # 不特判的话 Path("C:\\stolen").resolve() 会当成相对路径，结论正好相反。
+    if _WIN_ABS.match(expanded) and os.name != "nt":
+        return True
     try:
-        p = Path(_expand(target))
+        p = Path(expanded)
     except (ValueError, OSError):
         return False
     try:

@@ -139,6 +139,7 @@ export const EVENT_KINDS = [
   "resume",
   "model_call",
   "tool_call",
+  "assistant_delta",
   "denied",
   "unknown_tool",
   "hook_error",

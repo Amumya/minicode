@@ -84,6 +84,7 @@ def test_ensure_redis_reuses_running(monkeypatch, tmp_path):
     import minicode.dev as dev
 
     monkeypatch.setattr(dev, "port_open", lambda *a, **k: True)
+    monkeypatch.setattr(dev, "redis_alive", lambda *a, **k: True)
     proc, url = ensure_redis(tmp_path)
     assert proc is None
     assert url == redis_url()
@@ -115,6 +116,7 @@ def test_ensure_redis_starts_bundled(monkeypatch, tmp_path):
         return FakeProc()
 
     monkeypatch.setattr(dev, "port_open", fake_open)
+    monkeypatch.setattr(dev, "redis_alive", lambda *a, **k: True)
     monkeypatch.setattr(dev.subprocess, "Popen", fake_popen)
 
     proc, url = ensure_redis(tmp_path)

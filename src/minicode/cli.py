@@ -163,6 +163,7 @@ def cmd_run(args, provider_factory=None) -> int:
             skills=skills_loader,
             python_hint=None if args.no_python_hint else sys.executable,
             plan_hint=args.plan,
+            tasks_hint=task_store is not None,
         ),
     )
     elapsed = time.time() - started

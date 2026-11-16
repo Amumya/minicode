@@ -42,7 +42,7 @@ class AnthropicProvider:
         self.model = settings.model
         self.max_tokens = max_tokens
 
-    def complete(self, system: str, messages: list[dict], tools: list[dict]) -> ModelReply:
+    def _request_kwargs(self, system: str, messages: list[dict], tools: list[dict]) -> dict:
         kwargs: dict = {
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -51,9 +51,23 @@ class AnthropicProvider:
         }
         if tools:
             kwargs["tools"] = tools
+        return kwargs
 
-        resp = self._client.messages.create(**kwargs)
+    def stream(self, system: str, messages: list[dict], tools: list[dict],
+               on_text) -> ModelReply:
+        """流式调用：每来一小段文字就回调 on_text，最后返回完整 ModelReply。
 
+        为什么需要：非流式时界面要等整段回答生成完才显示，看起来像"卡住然后一次性跳出来"。
+        """
+        kwargs = self._request_kwargs(system, messages, tools)
+        with self._client.messages.stream(**kwargs) as stream:
+            for chunk in stream.text_stream:
+                if chunk:
+                    on_text(chunk)
+            resp = stream.get_final_message()
+        return self._to_reply(resp)
+
+    def _to_reply(self, resp) -> ModelReply:
         text_parts: list[str] = []
         calls: list[ToolCall] = []
         for block in getattr(resp, "content", []) or []:

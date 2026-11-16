@@ -177,6 +177,7 @@ def create_app(
                     skills=skills_loader,
                     python_hint=sys.executable,
                     plan_hint=state.plan,
+                    tasks_hint=state.tasks,
                 ),
                 resume=resume,
                 on_step=on_step,

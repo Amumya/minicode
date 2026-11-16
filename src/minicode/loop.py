@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -131,8 +133,32 @@ def run(
             if cstats.changed:
                 rec.add("compact", step=step, **cstats.as_dict())
 
+        # 流式：把模型吐字的过程变成事件，界面就能逐字显示。
+        # 不是每个 provider 都支持（测试里的假 provider 就没有），所以用 getattr 探测。
+        delta_buffer: list[str] = []
+        last_flush = [0.0]
+
+        def _flush_delta(force: bool = False) -> None:
+            if not delta_buffer:
+                return
+            now = time.time()
+            if not force and now - last_flush[0] < 0.08 and sum(len(x) for x in delta_buffer) < 120:
+                return
+            rec.add("assistant_delta", step=step, text="".join(delta_buffer))
+            delta_buffer.clear()
+            last_flush[0] = now
+
+        def _on_text(chunk: str) -> None:
+            delta_buffer.append(chunk)
+            _flush_delta()
+
         try:
-            reply = provider.complete(system, messages, tools.schemas())
+            stream_fn = getattr(provider, "stream", None)
+            if callable(stream_fn):
+                reply = stream_fn(system, messages, tools.schemas(), _on_text)
+                _flush_delta(force=True)
+            else:
+                reply = provider.complete(system, messages, tools.schemas())
         except Exception as exc:  # noqa: BLE001 - 网络/API 异常不能让整个进程挂掉
             rec.add("finish", step=step, ok=False, reason="provider_error")
             if on_step is not None:
@@ -273,6 +299,9 @@ def run(
                 exit_code=tool_result.exit_code,
                 failed=tool_result.failed,
                 meta=tool_result.meta,
+                # 给界面看的输出预览：不带 [exit=] 前缀，太长就截断。
+                # 有了它用户不用点开事件流就能看到命令的结果。
+                output=str(tool_result.content)[:400],
             )
 
             post_ctx = HookContext(

@@ -37,6 +37,7 @@ def default_system(
     skills=None,
     python_hint: str | None = None,
     plan_hint: bool = False,
+    tasks_hint: bool = False,
 ) -> str:
     """拼出系统提示词。
 
@@ -48,6 +49,8 @@ def default_system(
         python_hint 该用哪个解释器。实测不说的话，agent 会用系统 python 跑
                     pytest，失败后再花好几步去找装了 pytest 的那个
         plan_hint   开了 todo 工具时提示它多步任务先写清单
+        tasks_hint  开了任务图时告诉它"什么情况该用、怎么用" ——
+                    只把工具挂上不说用途的话，实测模型一次都不会主动调
     """
     text = BASE if not shell_hint else BASE + (WINDOWS_HINT if os.name == "nt" else POSIX_HINT)
 
@@ -61,6 +64,16 @@ def default_system(
         text += (
             "\n\n任务超过两三步时，先用 todo_write 把计划写下来，"
             "每完成一步就更新清单的状态。"
+        )
+
+    if tasks_hint:
+        text += (
+            "\n\n有一组任务图工具（create_task / list_tasks / get_task / "
+            "claim_task / complete_task / update_task）。"
+            "当任务需要多步、且步骤之间有先后关系时，先 create_task 建条目，"
+            "用 blockedBy 表达「这一步依赖哪几步」，然后按顺序 claim_task 认领、"
+            "做完 complete_task 收尾 —— 完成时会告诉你解锁了哪些任务。"
+            "简单的一两步任务直接用 bash 做，不要为了用而用。"
         )
 
     catalog = ""

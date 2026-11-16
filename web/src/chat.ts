@@ -27,8 +27,12 @@ export interface RunLike {
 export interface ToolCallView {
   tool: string;
   ok: boolean;
-  /** 一句话摘要，比如命令的前 60 字 */
+  /** 一句话摘要（命令/路径原文，已折叠空白） */
   summary: string;
+  /** 退出码，界面用来标失败 */
+  exitCode?: number;
+  /** 输出预览（后端截到 400 字），界面直接显示，不用点开事件流 */
+  output?: string;
   step: number;
 }
 
@@ -68,6 +72,8 @@ export function describeToolCall(ev: AgentEvent): ToolCallView {
     tool,
     ok: d.failed !== true,
     summary,
+    exitCode: typeof d.exit_code === "number" ? d.exit_code : undefined,
+    output: typeof d.output === "string" ? d.output : undefined,
     step: typeof d.step === "number" ? d.step : 0,
   };
 }
@@ -104,6 +110,36 @@ export function buildTurns(runs: RunLike[]): Turn[] {
   return [...runs]
     .sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0))
     .map(buildTurn);
+}
+
+/**
+ * 把连续的 assistant_delta 合并成一条事件。
+ *
+ * 为什么要合并：流式输出时一次回答会拆成几十条增量事件，原始事件面板里
+ * 就会刷出几十行"思考"，看起来像卡住了在滚屏。合并成一条完整文本更可读。
+ */
+export function mergeDeltaEvents(events: AgentEvent[]): AgentEvent[] {
+  const out: AgentEvent[] = [];
+  let buffer: string[] = [];
+  let firstTs = 0;
+
+  const flush = () => {
+    if (buffer.length === 0) return;
+    out.push({ kind: "assistant_delta", ts: firstTs, data: { text: buffer.join("") } });
+    buffer = [];
+  };
+
+  for (const ev of events) {
+    if (ev.kind === "assistant_delta") {
+      if (buffer.length === 0) firstTs = ev.ts ?? 0;
+      buffer.push(String(rec(ev.data).text ?? ""));
+      continue;
+    }
+    flush();
+    out.push(ev);
+  }
+  flush();
+  return out;
 }
 
 export interface ConversationLike {
