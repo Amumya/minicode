@@ -57,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="挂上任务图工具（建/改/列/查/认领/完成），带依赖和环检测")
     r.add_argument("--memory", action="store_true",
                    help="挂上长期记忆工具（remember / recall / forget），存 .minicode/memory.jsonl")
+    r.add_argument("--mcp", action="store_true",
+                   help="连 .minicode/mcp.json 里启用的 MCP server，只暴露 allow 里列出的工具")
     r.add_argument("--compact-max-chars", type=int, default=4000,
                    help="单个工具结果超过多少字符就落盘（默认 4000）")
     r.add_argument("--compact-keep", type=int, default=3,
@@ -84,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--reload", action="store_true", help="改 Python 代码自动重载")
     d.add_argument("--no-redis", action="store_true",
                    help="不用 Redis（内存存储，进程退出后历史丢失）")
+
+    m = sub.add_parser("mcp", help="检查 MCP 配置（连 server、列工具、看 schema 大小）")
+    m.add_argument("--workspace", type=Path, default=None)
+    m.add_argument("--config", type=Path, default=None,
+                   help="直接指定 mcp.json 路径（默认 <workspace>/.minicode/mcp.json）")
 
     s = sub.add_parser("serve", help="起 HTTP 服务")
     s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
@@ -152,6 +159,20 @@ def cmd_run(args, provider_factory=None) -> int:
         ))
     task_store = TaskStore(workspace / ".minicode" / "tasks") if args.tasks else None
     memory = MemoryStore(workspace / ".minicode" / "memory.jsonl") if args.memory else None
+
+    # MCP：显式开关 + 配置里的 enabled/allow 双重限制
+    mcp_session = None
+    mcp_servers: list[str] = []
+    if getattr(args, "mcp", False):
+        from minicode.tools.mcp import connect_mcp
+
+        mcp_session = connect_mcp(workspace)
+        extra_tools.extend(mcp_session.tools)
+        mcp_servers = [item["server"] for item in mcp_session.report["servers"]]
+        for warning in mcp_session.report["warnings"]:
+            print(f"[mcp] {warning}", file=sys.stderr)
+        if not mcp_session.tools:
+            print("[mcp] 没有可用的 MCP 工具（检查 enabled 和 allow）", file=sys.stderr)
     tools = build_registry(files=args.files, todo=todo, skills=skills_loader,
                            tasks=task_store, memory=memory, extra=extra_tools)
 
@@ -172,8 +193,13 @@ def cmd_run(args, provider_factory=None) -> int:
             tasks_hint=task_store is not None,
             memory_hint=memory is not None,
             memory_snapshot=(memory.snapshot(args.task) if memory is not None else None),
+            mcp_servers=mcp_servers or None,
         ),
     )
+    if mcp_session is not None:
+        mcp_session.close()
+        mcp_session = None
+
     elapsed = time.time() - started
 
     if todo is not None and todo.items and not args.json:
@@ -332,6 +358,66 @@ def cmd_dev(args) -> int:
         dev.stop(redis_proc)
 
 
+def cmd_mcp(args) -> int:
+    """检查 MCP 配置：把每个 server 连一遍，列出模式/版本/工具/白名单过滤结果。
+
+    故意不跑模型：这一步是排查配置问题用的，不该花 API 费用。
+    """
+    from minicode.mcp import McpClient, McpError, load_servers
+    from minicode.tools.mcp import schema_stats
+
+    workspace = Path(args.workspace or Path.cwd()).resolve()
+    try:
+        configs = load_servers(workspace, args.config)
+    except McpError as exc:
+        print(f"MCP 配置有问题：{exc}", file=sys.stderr)
+        return 2
+
+    if not configs:
+        print(f"没有 MCP 配置（找的是 {args.config or workspace / '.minicode' / 'mcp.json'}）")
+        print("格式见 README 的「MCP」一节：servers 数组，每项要有 name/command，")
+        print("并且 enabled=true + allow=[...] 才会真的挂上。")
+        return 1
+
+    print(f"MCP 配置：{len(configs)} 个 server")
+    failed = 0
+    connected: list[McpClient] = []
+    for config in configs:
+        print(f"\n[{config.name}]  {config.describe()}")
+        print(f"  enabled={config.enabled}  allow={', '.join(config.allow) or '(空)'}")
+        if not config.enabled:
+            print("  → 跳过（默认不启用，要在配置里写 enabled: true）")
+            continue
+        client = McpClient(config, cwd=workspace)
+        try:
+            client.start()
+            tools = client.list_tools()
+        except McpError as exc:
+            failed += 1
+            print(f"  ✗ 连接失败：{exc}")
+            client.close()
+            continue
+        connected.append(client)
+        by_name = {str(t.get("name", "")): t for t in tools if isinstance(t, dict)}
+        allowed = [name for name in config.allow if name in by_name]
+        missing = [name for name in config.allow if name not in by_name]
+        blocked = [name for name in by_name if name not in config.allow]
+        stats = schema_stats([by_name[name] for name in allowed])
+        print(f"  ✓ 模式={client.mode}  协议={client.protocol_version}  启动={client.startup_ms}ms")
+        print(f"  工具 {len(tools)} 个，允许 {len(allowed)} 个：{', '.join(allowed) or '(空)'}")
+        if blocked:
+            print(f"  未允许（默认拒绝）：{', '.join(blocked)}")
+        if missing:
+            print(f"  ⚠ allow 里这些工具 server 没有：{', '.join(missing)}")
+        print(f"  允许工具的 schema：{stats['chars']} 字符 ≈ {stats['est_tokens']} tokens/轮")
+        if not allowed:
+            print("  ⚠ 一个工具都没允许 —— 模型看不到任何工具")
+
+    for client in connected:
+        client.close()
+    return 1 if failed else 0
+
+
 def cmd_serve(args) -> int:
     try:
         import uvicorn
@@ -362,6 +448,8 @@ def main(argv: list[str] | None = None, provider_factory=None) -> int:
         return cmd_app(args)
     if args.command == "dev":
         return cmd_dev(args)
+    if args.command == "mcp":
+        return cmd_mcp(args)
     parser.print_help()
     return 2
 

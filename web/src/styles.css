@@ -1042,3 +1042,17 @@ summary:hover {
 .memory-tags {
   font-size: 11px;
 }
+
+
+/* ---- 工具来源徽标（MCP） ---- */
+
+.tool-source {
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  letter-spacing: 0.02em;
+}

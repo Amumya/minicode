@@ -220,6 +220,9 @@ check("新会话清空右栏工具", doc.querySelectorAll("#thinkList .tool").le
 // ---------------------------------------------------------------- 提交 + 流式
 doc.querySelector("#task").value = "列出 tests 目录";
 doc.querySelector("#optPlan").checked = true;
+check("MCP 开关默认关闭（要显式开才起外部进程）",
+  doc.querySelector("#optMcp").checked === false);
+doc.querySelector("#optMcp").checked = true;
 doc.querySelector("#submit").click();
 await sleep(120);
 const es = sources.at(-1);
@@ -228,7 +231,7 @@ const sentBody = bodies.get("POST /runs") ?? {};
 check("提交 body 带上了任务和开关",
   sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
   sentBody.include_files === true && sentBody.tasks === true &&
-  sentBody.memory === true);
+  sentBody.memory === true && sentBody.mcp === true);
 check("提交时带上默认步数 20", sentBody.max_steps === 20, String(sentBody.max_steps));
 
 const before = calls.filter((c) => c === "POST /runs").length;
@@ -290,6 +293,18 @@ await sleep(120);
 check("流式文字边收边显示",
   doc.querySelector("#chat .answer.streaming")?.textContent?.includes("正在统计文件数量"));
 check("流式时有光标", !!doc.querySelector("#chat .answer.streaming .cursor"));
+
+// ---- MCP 工具来源标记 ----
+es.emit("tool_call", { kind: "tool_call", ts,
+  data: { step: 3, tool: "mcp__fixture__echo", args: { text: "hi" },
+          exit_code: 0, failed: false, output: "hi" } });
+await sleep(150);
+const mcpRow = [...doc.querySelectorAll("#thinkList .tool")].at(-1);
+check("MCP 工具显示来源标记", mcpRow?.querySelector(".tool-source")?.textContent === "MCP",
+  mcpRow?.querySelector(".tool-source")?.textContent ?? "(无)");
+check("MCP 工具名显示成 server/工具",
+  mcpRow?.querySelector(".tool-name")?.textContent === "fixture/echo",
+  mcpRow?.querySelector(".tool-name")?.textContent ?? "(无)");
 
 // ---------------------------------------------------------------- 结束
 const FINAL_MD = [

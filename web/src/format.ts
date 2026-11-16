@@ -78,6 +78,16 @@ export function describeEvent(ev: AgentEvent): Described {
     case "assistant_delta":
       // 增量事件只在流式时出现；原始事件列表里只显示一小段，别把每条都铺开
       return { label: "模型输出", detail: clip(str(d.text), 60), tone: "info" };
+    case "mcp_ready": {
+      const servers = num(d.server_count) ?? 0;
+      const tools = num(d.tool_count) ?? 0;
+      const warnings = Array.isArray(d.warnings) ? d.warnings.length : 0;
+      return {
+        label: "MCP",
+        detail: `${servers} 个 server · ${tools} 个工具` + (warnings ? ` · ${warnings} 条警告` : ""),
+        tone: warnings ? "warn" : "info",
+      };
+    }
     case "tool_call": {
       const args = asRecord(d.args);
       const target = str(args.command) || str(args.path) || "";

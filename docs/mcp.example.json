@@ -1,0 +1,19 @@
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:\\work\\demo"],
+      "enabled": false,
+      "allow": ["read_file", "list_directory"],
+      "timeout": 30
+    },
+    {
+      "name": "fixture",
+      "command": ".venv\\Scripts\\python.exe",
+      "args": ["tests/fixtures/mcp_echo_server.py"],
+      "enabled": true,
+      "allow": ["echo", "add"]
+    }
+  ]
+}

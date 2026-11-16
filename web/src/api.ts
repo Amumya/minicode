@@ -27,6 +27,7 @@ export interface RunRow extends RunLike {
   event_count?: number;
   workspace?: string;
   memory?: boolean;
+  mcp?: boolean;
 }
 
 export interface Workspace {
@@ -61,6 +62,7 @@ export interface CreateRunOptions {
   compact?: boolean;
   tasks?: boolean;
   memory?: boolean;
+  mcp?: boolean;
 }
 
 export class ApiError extends Error {
@@ -146,6 +148,7 @@ export const api = {
       compact: opts.compact ?? false,
       tasks: opts.tasks ?? false,
       memory: opts.memory ?? false,
+      mcp: opts.mcp ?? false,
     };
     if (opts.workspace) body.workspace = opts.workspace;
     if (opts.model) body.model = opts.model;

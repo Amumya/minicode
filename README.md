@@ -71,7 +71,7 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - 任务自洽检查：`eval/verify_tasks.py`，几秒钟验证"起始代码下隐藏测试必须是挂的"
 - CI：Python 3.11 / 3.12 + 前端测试
 
-现状：Python 测试 351 条、前端 67 条、界面链路检查 61 项。
+现状：Python 测试 384 条、前端 67 条、界面链路检查 64 项。
 
 ## 跑出来的数字
 
@@ -129,6 +129,50 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 .venv\Scripts\python.exe eval\measure_prompts.py
 ```
 
+## MCP（外部工具）
+
+接的是官方协议：**2026-07-28 现代版**（无握手，每个请求带 `_meta`）+ **旧版回退**
+（2025-11-25 / 2025-06-18 / 2024-11-05 的 initialize 握手），只做 stdio 传输、只接 tools 能力。
+
+配置放 `<workspace>/.minicode/mcp.json`（示例见 [docs/mcp.example.json](docs/mcp.example.json)）：
+
+```json
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:\\work\\demo"],
+      "enabled": true,
+      "allow": ["read_file", "list_directory"],
+      "timeout": 30
+    }
+  ]
+}
+```
+
+三层限制，缺一不可：
+
+1. **`enabled: true`** 才会去连（默认 false）；
+2. **`allow`** 是枚举白名单：没列出的工具**不会注册**，模型看不到；
+3. 运行时再查一次白名单（防止绕过注册直接调用）。
+
+工具名是 `mcp__<server>__<tool>`，界面右栏会把它显示成 `server/tool` 并加 **MCP** 徽标，
+每次调用的耗时/协议版本记在事件里。先体检配置（不花模型钱）：
+
+```powershell
+minicode mcp                 # 连一遍 server，列出模式/版本/工具/白名单过滤/schema 大小
+minicode run --mcp "用 MCP 的 add 工具算 7+35"   # 跑任务时挂上 MCP 工具
+```
+
+界面里也可以：输入区勾「MCP」（默认不勾）。
+
+> ⚠️ 配置里的 `command` 等于**允许它在你机器上执行任意代码**，这是 MCP 的固有风险。
+> 所以默认关闭 + 白名单；`minicode mcp check` 会先把完整命令行打印出来让你确认。
+
+**不做**：HTTP/SSE 传输、resources/prompts/sampling、MRTP（server 要求补输入时直接报错）、
+多 server 并行、自动重启。原则是"先能用、能审计、能失败"，不假装支持全量。
+
 ## 还差什么
 
 - [x] 主循环和工具调用
@@ -156,7 +200,7 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - [x] bash 工具流式读取输出（攒够上限就杀进程，超大输出不会打爆内存）
 - [x] HTTP 接口访问令牌（`--token` / `MINICODE_TOKEN`，默认关闭）
 - [x] 记忆（跨 run 的长期笔记，`--memory` / 界面开关）
-- [ ] MCP 接入
+- [x] MCP 接入（stdio，tools 能力；本地 server 默认关闭 + 白名单）
 
 ## 跑起来
 

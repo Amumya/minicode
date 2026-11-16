@@ -40,6 +40,7 @@ def default_system(
     tasks_hint: bool = False,
     memory_hint: bool = False,
     memory_snapshot: str | None = None,
+    mcp_servers: list[str] | None = None,
 ) -> str:
     """拼出系统提示词。
 
@@ -76,6 +77,14 @@ def default_system(
             "用 blockedBy 表达「这一步依赖哪几步」，然后按顺序 claim_task 认领、"
             "做完 complete_task 收尾 —— 完成时会告诉你解锁了哪些任务。"
             "简单的一两步任务直接用 bash 做，不要为了用而用。"
+        )
+
+    if mcp_servers:
+        names = "、".join(mcp_servers)
+        text += (
+            f"\n\n另外挂了外部 MCP 工具（来自 server：{names}），工具名以 `mcp__` 开头。"
+            "它们是独立进程提供的，参数和副作用对我们不透明，只能按前面对外暴露的白名单用。"
+            "调用前先想清楚参数；不确定的先用最小参数试。"
         )
 
     if memory_hint:

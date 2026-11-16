@@ -110,6 +110,7 @@ class RunRequest(BaseModel):
     compact: bool = False
     tasks: bool = False
     memory: bool = False
+    mcp: bool = False
 
 
 class FollowupRequest(BaseModel):
@@ -231,6 +232,8 @@ def create_app(
                 resume: dict | None) -> None:
         active_runs.add(state.id)
         cancel_flags[state.id] = threading.Event()
+        mcp_session = None
+        mcp_servers: list[str] = []
         state.status = "running"
         st.update(state)
         rec = Recorder(on_event=lambda ev: _emit(state, cs, ev, loop_ref))
@@ -246,12 +249,28 @@ def create_app(
         compactor = Compactor(Path(state.workspace), CompactConfig()) if state.compact else None
 
         try:
+            mcp_tools: list = []
+            if state.mcp:
+                from minicode.tools.mcp import connect_mcp
+
+                mcp_session = connect_mcp(Path(state.workspace))
+                mcp_tools = list(mcp_session.tools)
+                mcp_servers = [item["server"] for item in mcp_session.report["servers"]]
+                rec.add(
+                    "mcp_ready",
+                    server_count=len(mcp_servers),
+                    tool_count=len(mcp_tools),
+                    servers=mcp_session.report["servers"],
+                    warnings=mcp_session.report["warnings"],
+                )
+
             result = run_loop(
                 state.task,
                 provider=_factory(run_settings),
                 tools=build_registry(
                     files=state.include_files, todo=todo,
                     skills=skills_loader, tasks=_tasks_for(state),
+                    extra=list(mcp_tools),
                     memory=_memory_for(state)),
                 settings=run_settings,
                 workspace=Path(state.workspace),
@@ -261,6 +280,7 @@ def create_app(
                     python_hint=sys.executable,
                     plan_hint=state.plan,
                     tasks_hint=state.tasks,
+                    mcp_servers=mcp_servers or None,
                     memory_hint=state.memory,
                     memory_snapshot=(
                         _memory_for(state).snapshot(state.task)
@@ -287,6 +307,8 @@ def create_app(
             state.error = f"{type(exc).__name__}: {exc}"
             state.status = "error"
         finally:
+            if mcp_session is not None:
+                mcp_session.close()
             active_runs.discard(state.id)
             cancel_flags.pop(state.id, None)
             st.update(state)
@@ -456,6 +478,7 @@ def create_app(
             compact=req.compact,
             tasks=req.tasks,
             memory=req.memory,
+            mcp=req.mcp,
         )
         st.create(state)
         _start(state, run_settings, resume=None)
@@ -607,6 +630,7 @@ def create_app(
             compact=parent.compact,
             tasks=parent.tasks,
             memory=parent.memory,
+            mcp=parent.mcp,
         )
         st.create(state)
         # step=0 表示"从第 1 步开始"，usage 清零：新的一轮单独计费

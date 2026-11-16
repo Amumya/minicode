@@ -121,6 +121,7 @@ const main = {
   optCompact: el<HTMLInputElement>("optCompact"),
   optTasks: el<HTMLInputElement>("optTasks"),
   optMemory: el<HTMLInputElement>("optMemory"),
+  optMcp: el<HTMLInputElement>("optMcp"),
 };
 
 /* ------------------------------------------------------------------ 展开状态
@@ -245,6 +246,10 @@ function toolRow(tool: ToolCallView): HTMLElement {
   const li = h("li", { class: tool.ok ? "tool" : "tool failed" });
   const head = h("div", { class: "tool-head" });
   head.append(h("code", { class: "tool-name" }, tool.tool));
+  if (tool.source) {
+    head.append(h("span", { class: "tool-source", title: `来自 MCP server：${tool.mcpServer}` },
+      tool.source));
+  }
   if (tool.exitCode !== undefined) {
     head.append(
       h("span", { class: `tool-exit ${tool.ok ? "ok" : "error"}` },
@@ -902,6 +907,7 @@ async function submit(): Promise<void> {
         compact: main.optCompact.checked,
         tasks: main.optTasks.checked,
         memory: main.optMemory.checked,
+        mcp: main.optMcp.checked,
       });
       runId = resp.id;
       if (!conversationRoot) conversationRoot = runId;

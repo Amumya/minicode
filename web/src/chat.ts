@@ -34,6 +34,11 @@ export interface ToolCallView {
   /** 输出预览（后端截到 400 字），界面直接显示，不用点开事件流 */
   output?: string;
   step: number;
+  /** 工具来源：MCP 工具会标 "MCP"，内置工具为空 */
+  source?: string;
+  /** MCP 原始信息：server / 工具名，界面上显示成 `server/工具` */
+  mcpServer?: string;
+  mcpTool?: string;
 }
 
 export interface Turn {
@@ -57,9 +62,20 @@ function rec(v: unknown): Record<string, unknown> {
 }
 
 /** 从工具调用事件里抽一句人看得懂的摘要。 */
+/** 拆 `mcp__<server>__<tool>`。不是 MCP 工具返回 null。 */
+function splitMcpName(name: string): { server: string; tool: string } | null {
+  if (!name.startsWith("mcp__")) return null;
+  const rest = name.slice(5);
+  const cut = rest.indexOf("__");
+  if (cut <= 0 || cut + 2 >= rest.length) return null;
+  return { server: rest.slice(0, cut), tool: rest.slice(cut + 2) };
+}
+
 export function describeToolCall(ev: AgentEvent): ToolCallView {
   const d = rec(ev.data);
-  const tool = String(d.tool ?? "?");
+  const rawTool = String(d.tool ?? "?");
+  const mcp = splitMcpName(rawTool);
+  const tool = mcp ? `${mcp.server}/${mcp.tool}` : rawTool;
   const args = rec(d.args);
   let summary = "";
   if (typeof args.command === "string") summary = args.command;
@@ -67,6 +83,7 @@ export function describeToolCall(ev: AgentEvent): ToolCallView {
   else if (typeof args.taskId === "string") summary = args.taskId;
   else if (typeof args.subject === "string") summary = args.subject;
   else if (typeof args.prompt === "string") summary = args.prompt;
+  else if (typeof args.text === "string") summary = args.text;
   else if (Array.isArray(args.todos)) summary = `${args.todos.length} 条清单`;
   summary = summary.replace(/\s+/g, " ").trim();
   if (summary.length > 80) summary = summary.slice(0, 80) + "…";
@@ -77,6 +94,9 @@ export function describeToolCall(ev: AgentEvent): ToolCallView {
     exitCode: typeof d.exit_code === "number" ? d.exit_code : undefined,
     output: typeof d.output === "string" ? d.output : undefined,
     step: typeof d.step === "number" ? d.step : 0,
+    source: mcp ? "MCP" : undefined,
+    mcpServer: mcp?.server,
+    mcpTool: mcp?.tool,
   };
 }
 
