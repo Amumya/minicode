@@ -87,6 +87,7 @@ def run(
     on_step: "Callable[[dict], None] | None" = None,
     hooks: HookBus | None = None,
     compactor: Compactor | None = None,
+    should_stop: "Callable[[], bool] | None" = None,
 ) -> RunResult:
     """跑一个任务。
 
@@ -126,6 +127,22 @@ def run(
     n_models = 0     # 模型调用次数
 
     for step in range(start_step, end_step + 1):
+        # 取消：每步开头检查一次。正在飞的模型调用打断不了，
+        # 但它一返回就会被这里拦下 —— 不会继续执行工具、也不会再发下一次请求。
+        if should_stop is not None and should_stop():
+            rec.add("finish", step=step - 1, ok=False, reason="cancelled")
+            if on_step is not None:
+                on_step({"messages": messages, "step": step - 1, "usage": usage_total})
+            return RunResult(
+                ok=False,
+                final_text="",
+                steps=step - 1,
+                stop_reason="cancelled",
+                usage=usage_total,
+                tool_calls=n_calls,
+                denied=n_denied,
+            )
+
         # 每次调模型之前压一次。压的是"要发出去的那份"，
         # 所以检查点里存的也是压缩后的内容 —— 恢复回来发送的东西才一致。
         if compactor is not None:

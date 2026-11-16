@@ -121,6 +121,10 @@ export const api = {
     return request(`/runs/${encodeURIComponent(runId)}/followup`, jsonBody(body));
   },
 
+  cancel(runId: string): Promise<{ id: string; cancelled?: boolean }> {
+    return request(`/runs/${encodeURIComponent(runId)}/cancel`, jsonBody({}));
+  },
+
   resume(runId: string, maxSteps?: number): Promise<{ id: string }> {
     return request(`/runs/${encodeURIComponent(runId)}/resume`, jsonBody({ max_steps: maxSteps }));
   },

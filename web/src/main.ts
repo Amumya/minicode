@@ -28,6 +28,7 @@ import {
   latestPlan,
   summarizeUsage,
   type PlanItem,
+  type TaskItem,
 } from "./derive.ts";
 import { describeToolCall, type ToolCallView } from "./chat.ts";
 import { renderMarkdown } from "./markdown.ts";
@@ -108,6 +109,7 @@ const main = {
   task: el<HTMLTextAreaElement>("task"),
   submit: el<HTMLButtonElement>("submit"),
   resume: el<HTMLButtonElement>("resume"),
+  cancel: el<HTMLButtonElement>("cancel"),
   statusLine: el<HTMLElement>("status"),
   model: el<HTMLSelectElement>("model"),
   maxSteps: el<HTMLInputElement>("maxSteps"),
@@ -225,7 +227,7 @@ function renderConversations(): void {
 
 /* ------------------------------------------------------------------ 对话区 */
 
-/** 一条工具调用对应的 DOM。历史和实时共用，保证两边长得一样。 */
+/** 一条工具调用对应的 DOM。实时面板和历史回看共用。 */
 function toolRow(tool: ToolCallView): HTMLElement {
   const li = h("li", { class: tool.ok ? "tool" : "tool failed" });
   const head = h("div", { class: "tool-head" });
@@ -255,21 +257,6 @@ function eventRow(ev: AgentEvent): HTMLElement {
   return row;
 }
 
-function renderTools(turn: Turn, live: boolean, defaultOpen: boolean): HTMLElement | null {
-  if (turn.tools.length === 0 && turn.denied === 0) return null;
-  const failed = turn.tools.filter((t) => !t.ok).length;
-  const text =
-    `思考：工具 ${turn.tools.length} 次` +
-    (failed ? `（失败 ${failed}）` : "") +
-    (turn.denied ? ` · 被拒 ${turn.denied}` : "");
-  return detailsBlock(`${turn.runId}:tools`, "process", text, () => {
-    const list = h("ul", { class: "tool-list" });
-    for (const tool of turn.tools) list.append(toolRow(tool));
-    if (live) list.append(h("li", { class: "muted" }, "…还在跑"));
-    return list;
-  }, defaultOpen);
-}
-
 function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
   if (!turn.plan || turn.plan.length === 0) return null;
   const done = turn.plan.filter((p) => p.status === "completed").length;
@@ -287,66 +274,10 @@ function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
   }, defaultOpen);
 }
 
-/** 任务图看板：展开时才去拉数据（历史会话不会白拉一堆 /tasks）。 */
-function renderBoard(turn: Turn): HTMLElement | null {
-  // 只有"这个 run 启用了任务图且用过"才显示；是否启用以接口返回为准
-  return detailsBlock(`${turn.runId}:board`, "board", "任务看板", () => {
-    const body = h("div", { class: "board-body" }, "加载中…");
-    void (async () => {
-      try {
-        const data = await api.runTasks(turn.runId);
-        if (!data.enabled || data.tasks.length === 0) {
-          body.textContent = "这次没有启用任务图";
-          return;
-        }
-        const board = buildTaskBoard(data.tasks);
-        body.replaceChildren();
-        body.append(
-          h("div", { class: "board-meta muted" },
-            `${data.progress.done}/${data.progress.total} 完成 · ` +
-            `可开工 ${board.ready.length} · 阻塞 ${board.blocked.length}`),
-        );
-        const grid = h("div", { class: "board-grid" });
-        for (const task of data.tasks) {
-          const card = h("div", { class: `task-card status-${task.status}` });
-          card.append(h("code", { class: "task-id" }, task.id.replace("task_", "")));
-          card.append(h("span", { class: "task-subject" }, task.subject));
-          const waiting = (task.blockedBy ?? []).filter((dep) => {
-            const found = data.tasks.find((x) => x.id === dep);
-            return !found || found.status !== "completed";
-          });
-          card.append(
-            h("span", { class: "task-meta muted" },
-              [task.status, task.owner ? `owner ${task.owner}` : "",
-               waiting.length ? `等 ${waiting.map((w) => w.replace("task_", "")).join(",")}` : ""]
-                .filter(Boolean).join(" · ")),
-          );
-          grid.append(card);
-        }
-        body.append(grid);
-      } catch {
-        body.textContent = "任务看板拉取失败";
-      }
-    })();
-    return body;
-  });
-}
-
-function renderRawEvents(runId: string, events: AgentEvent[]): HTMLElement | null {
-  if (events.length === 0) return null;
-  const merged = mergeDeltaEvents(events);
-  return detailsBlock(`${runId}:raw`, "raw", `原始事件：${merged.length} 条`, () => {
-    const list = h("div", { class: "event-list" });
-    for (const ev of merged) list.append(eventRow(ev));
-    return list;
-  });
-}
-
+/** 气泡：用户消息 + 计划 + 用量 + 结果。思考/看板/原始事件都在右栏。 */
 function renderTurn(
   turn: Turn,
-  events: AgentEvent[],
   live: boolean,
-  streamingText = "",
   defaultOpen = false,
 ): HTMLElement {
   const wrap = h("div", { class: `turn${live ? " live" : ""}` });
@@ -360,41 +291,27 @@ function renderTurn(
   assistant.append(h("div", { class: "avatar" }, "m"));
   const bubble = h("div", { class: "bubble" });
 
-  // 顺序很重要：**思考过程放前面、结果放最后**。
-  // 反过来（结果在上）时，一旦展开工具列表，看结果就得往回滚 —— 用户反馈过这个。
-  const tools = renderTools(turn, live, defaultOpen);
-  if (tools) bubble.append(tools);
   const plan = renderPlan(turn, defaultOpen);
   if (plan) bubble.append(plan);
-  const board = renderBoard(turn);
-  if (board) bubble.append(board);
-  const raw = renderRawEvents(turn.runId, events);
-  if (raw) bubble.append(raw);
 
   if (turn.usage.steps > 0) {
     bubble.append(h("div", { class: "turn-usage muted" }, formatUsage(turn.usage)));
   }
 
-  // 结果固定在气泡最后一块
   if (turn.error) {
     bubble.append(h("div", { class: "answer error" }, `出错：${turn.error}`));
   } else if (turn.answer) {
     bubble.append(h("div", { class: "answer-label" }, "结果"));
-    // 模型输出是 Markdown，渲染成 DOM（不用 innerHTML，天然没有注入面）
     const answerNode = h("div", { class: "answer markdown" });
     answerNode.append(renderMarkdown(turn.answer));
     bubble.append(answerNode);
-  } else if (streamingText) {
-    // 流式输出：模型还在吐字，先把已经收到的显示出来
-    const live_answer = h("div", { class: "answer streaming" }, streamingText);
-    live_answer.append(h("span", { class: "cursor" }));
-    bubble.append(live_answer);
-  } else if (live || turn.status === "running" || turn.status === "queued") {
-    bubble.append(h("div", { class: "answer thinking" }, "运行中…"));
   } else if (!turn.ok && turn.status === "error") {
-    bubble.append(h("div", { class: "answer error" }, "运行出错（详情看上面的事件）"));
+    bubble.append(h("div", { class: "answer error" }, "运行出错（详情看右侧面板）"));
   } else if (!turn.ok && turn.status === "done") {
-    bubble.append(h("div", { class: "answer muted" }, "没跑完（步数用尽或中断）"));
+    const text = turn.stopReason === "cancelled"
+      ? "已取消"
+      : "没跑完（步数用尽或中断）";
+    bubble.append(h("div", { class: "answer muted" }, text));
   }
 
   assistant.append(bubble);
@@ -402,22 +319,129 @@ function renderTurn(
   return wrap;
 }
 
+/* ------------------------------------------------------------------ 右侧详情面板 */
+
+const panel = {
+  root: el<HTMLElement>("inspector"),
+  appRoot: el<HTMLElement>("appRoot"),
+  toggle: el<HTMLButtonElement>("toggleInspector"),
+  close: el<HTMLButtonElement>("closeInspector"),
+  thinkSection: el<HTMLDetailsElement>("thinkSection"),
+  thinkList: el<HTMLUListElement>("thinkList"),
+  thinkMeta: el<HTMLElement>("thinkMeta"),
+  boardSection: el<HTMLDetailsElement>("boardSection"),
+  boardBody: el<HTMLElement>("boardBody"),
+  boardMeta: el<HTMLElement>("boardMeta"),
+  rawSection: el<HTMLDetailsElement>("rawSection"),
+  rawList: el<HTMLElement>("rawList"),
+  rawMeta: el<HTMLElement>("rawMeta"),
+};
+
+/** 每个 run 的任务看板只拉一次（历史回看时反复切会话不必重复请求）。 */
+const boardCache = new Map<string, { enabled: boolean; tasks: TaskItem[]; progress: { done: number; total: number } } | null>();
+
+function renderBoardInto(
+  data: { enabled: boolean; tasks: TaskItem[]; progress: { done: number; total: number } } | null,
+): void {
+  const body = panel.boardBody;
+  body.replaceChildren();
+  panel.boardMeta.textContent = "";
+  if (!data) {
+    body.append(h("p", { class: "muted" }, "任务看板拉取失败"));
+    return;
+  }
+  if (!data.enabled || data.tasks.length === 0) {
+    body.append(h("p", { class: "muted" }, "这一轮没有启用任务图"));
+    return;
+  }
+  const board = buildTaskBoard(data.tasks);
+  panel.boardMeta.textContent =
+    `${data.progress.done}/${data.progress.total} 完成 · 可开工 ${board.ready.length}`;
+  body.append(
+    h("div", { class: "board-meta muted" },
+      `阻塞 ${board.blocked.length} · 进行中 ${board.inProgress.length}`),
+  );
+  const grid = h("div", { class: "board-grid" });
+  for (const task of data.tasks) {
+    const card = h("div", { class: `task-card status-${task.status}` });
+    card.append(h("code", { class: "task-id" }, task.id.replace("task_", "")));
+    card.append(h("span", { class: "task-subject" }, task.subject));
+    const waiting = (task.blockedBy ?? []).filter((dep) => {
+      const found = data.tasks.find((x) => x.id === dep);
+      return !found || found.status !== "completed";
+    });
+    card.append(
+      h("span", { class: "task-meta muted" },
+        [task.status, task.owner ? `owner ${task.owner}` : "",
+         waiting.length ? `等 ${waiting.map((w) => w.replace("task_", "")).join(",")}` : ""]
+          .filter(Boolean).join(" · ")),
+    );
+    grid.append(card);
+  }
+  body.append(grid);
+}
+
+async function loadBoard(runId: string): Promise<void> {
+  if (boardCache.has(runId)) {
+    renderBoardInto(boardCache.get(runId) ?? null);
+    return;
+  }
+  panel.boardBody.replaceChildren(h("p", { class: "muted" }, "加载中…"));
+  try {
+    const data = await api.runTasks(runId);
+    boardCache.set(runId, data);
+    renderBoardInto(data);
+  } catch {
+    boardCache.set(runId, null);
+    renderBoardInto(null);
+  }
+}
+
+function panelTools(turn: Turn): ToolCallView[] {
+  return turn.tools;
+}
+
+/** 把右栏刷新成"某一轮"的详情。run 结束、切会话、新会话都会调它。 */
+function renderInspector(turn: Turn | null, events: AgentEvent[]): void {
+  if (!turn) {
+    panel.thinkList.replaceChildren(h("li", { class: "muted" }, "还没有工具调用"));
+    panel.thinkMeta.textContent = "";
+    panel.rawList.replaceChildren();
+    panel.rawMeta.textContent = "";
+    renderBoardInto(null);
+    panel.boardBody.replaceChildren(h("p", { class: "muted" }, "这一轮没有启用任务图"));
+    return;
+  }
+
+  const tools = panelTools(turn);
+  panel.thinkList.replaceChildren();
+  if (tools.length === 0) {
+    panel.thinkList.append(h("li", { class: "muted" }, "这一轮没有工具调用"));
+  } else {
+    for (const tool of tools) panel.thinkList.append(toolRow(tool));
+  }
+  const failed = tools.filter((t) => !t.ok).length;
+  panel.thinkMeta.textContent =
+    `工具 ${tools.length} 次` +
+    (failed ? ` · 失败 ${failed}` : "") +
+    (turn.denied ? ` · 被拒 ${turn.denied}` : "");
+
+  const merged = mergeDeltaEvents(events);
+  panel.rawList.replaceChildren();
+  for (const ev of merged) panel.rawList.append(eventRow(ev));
+  panel.rawMeta.textContent = `${merged.length} 条`;
+
+  void loadBoard(turn.runId);
+}
+
 /* ------------------------------------------------------------------ 实时增量渲染
 
-为什么单独一套：每来一个事件就重建整个对话区，会有两个问题 ——
-    1. 展开的折叠区被重建，等于被关掉（用户正在看的内容消失）
-    2. 整块重绘导致闪一下，长任务里每跳一步都闪
-所以"正在跑的那一轮"单独维护一份 DOM 引用，事件来了只追加变化的那一行。
+事件来了只往右栏和结果区追加，不重建整个对话区。
 */
 
 interface LiveView {
   runId: string;
-  processSummary: HTMLElement;
-  toolList: HTMLUListElement;
-  runningHint: HTMLLIElement;
   planHost: HTMLElement;
-  rawSummary: HTMLElement;
-  rawList: HTMLDivElement;
   usageEl: HTMLElement;
   answerEl: HTMLElement;
   toolCount: number;
@@ -442,41 +466,17 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   assistant.append(h("div", { class: "avatar" }, "m"));
   const bubble = h("div", { class: "bubble" });
 
-  const processDetail = h("details", { class: "process" });
-  processDetail.open = true;                       // 跑的时候展开，方便看进度
-  const processSummary = h("summary", {}, "思考：工具 0 次");
-  const toolList = h("ul", { class: "tool-list" });
-  const runningHint = h("li", { class: "muted" }, "…正在跑");
-  toolList.append(runningHint);
-  processDetail.append(processSummary, toolList);
-
   const planHost = h("div", { class: "plan-host" });
-
-  const board = renderBoard(turn);
-  if (board) bubble.append(board);
-
-  const rawDetail = h("details", { class: "raw" });
-  const rawSummary = h("summary", {}, "原始事件：0 条");
-  const rawList = h("div", { class: "event-list" });
-  rawDetail.append(rawSummary, rawList);
-
   const usageEl = h("div", { class: "turn-usage muted" });
-  const answerLabel = h("div", { class: "answer-label" }, "结果");
-  answerLabel.hidden = true;
   const answerEl = h("div", { class: "answer streaming markdown" });
+  bubble.append(planHost, usageEl, answerEl);
 
-  bubble.append(processDetail, planHost, rawDetail, usageEl, answerLabel, answerEl);
   assistant.append(bubble);
   wrap.append(assistant);
 
   const view: LiveView = {
     runId: turn.runId,
-    processSummary,
-    toolList,
-    runningHint,
     planHost,
-    rawSummary,
-    rawList,
     usageEl,
     answerEl,
     toolCount: 0,
@@ -489,25 +489,23 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   return { el: wrap, view };
 }
 
-/** 流式过程中也做 Markdown 渲染：只替换答案区，避免看到原始 ** 符号。 */
 function renderLiveAnswer(view: LiveView): void {
   const frag = renderMarkdown(view.deltaText);
   frag.append(h("span", { class: "cursor" }));
   view.answerEl.replaceChildren(frag);
 }
 
-function liveProcessSummary(view: LiveView): void {
-  view.processSummary.textContent =
-    `思考：工具 ${view.toolCount} 次` + (view.denied ? ` · 被拒 ${view.denied}` : "");
+function updateThinkMeta(view: LiveView): void {
+  panel.thinkMeta.textContent =
+    `工具 ${view.toolCount} 次` + (view.denied ? ` · 被拒 ${view.denied}` : "");
 }
 
 function appendRawRow(view: LiveView, ev: AgentEvent): void {
-  view.rawList.append(eventRow(ev));
+  panel.rawList.append(eventRow(ev));
   view.rawRows += 1;
-  view.rawSummary.textContent = `原始事件：${view.rawRows} 条`;
+  panel.rawMeta.textContent = `${view.rawRows} 条`;
 }
 
-/** 重建计划那一段（只有 todo 变化时才调）。 */
 function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   if (!plan || plan.length === 0) return;
   const done = plan.filter((x) => x.status === "completed").length;
@@ -535,7 +533,6 @@ function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   }
 }
 
-/** 把一个事件增量地反映到实时视图上。**不重建任何已有节点。** */
 function applyLiveEvent(ev: AgentEvent, silent = false): void {
   const view = liveView;
   if (!view) return;
@@ -549,21 +546,23 @@ function applyLiveEvent(ev: AgentEvent, silent = false): void {
       view.deltaRow.append(h("span", { class: "event-label" }, "思考"));
       view.deltaDetail = h("span", { class: "event-detail" }, view.deltaText.slice(0, 60));
       view.deltaRow.append(view.deltaDetail);
-      view.rawList.append(view.deltaRow);
+      panel.rawList.append(view.deltaRow);
       view.rawRows += 1;
-      view.rawSummary.textContent = `原始事件：${view.rawRows} 条`;
+      panel.rawMeta.textContent = `${view.rawRows} 条`;
     } else if (view.deltaDetail) {
       view.deltaDetail.textContent = view.deltaText.slice(0, 60);
     }
   } else if (ev.kind === "tool_call") {
     view.toolCount += 1;
-    view.toolList.insertBefore(toolRow(describeToolCall(ev)), view.runningHint);
-    liveProcessSummary(view);
+    // 第一次有工具调用时把"还没有工具调用"的提示去掉
+    if (view.toolCount === 1) panel.thinkList.replaceChildren();
+    panel.thinkList.append(toolRow(describeToolCall(ev)));
+    updateThinkMeta(view);
     if (!silent) renderLivePlan(view, latestPlan(liveEvents));
     appendRawRow(view, ev);
   } else if (ev.kind === "denied") {
     view.denied += 1;
-    liveProcessSummary(view);
+    updateThinkMeta(view);
     appendRawRow(view, ev);
   } else {
     appendRawRow(view, ev);
@@ -576,8 +575,10 @@ function applyLiveEvent(ev: AgentEvent, silent = false): void {
   }
 }
 
-/** 从侧栏/刷新恢复时，把已有事件灌进视图（不滚屏、不改顶栏）。 */
+/** 从历史/刷新恢复：把已有事件灌进右栏（不滚屏、不改顶栏）。 */
 function replayIntoLiveView(events: AgentEvent[], plan: PlanItem[] | null = null): void {
+  panel.thinkList.replaceChildren(h("li", { class: "muted" }, "还没有工具调用"));
+  panel.rawList.replaceChildren();
   for (const ev of events) applyLiveEvent(ev, true);
   if (plan) renderLivePlan(liveView as LiveView, plan);
   updateTopbarUsage();
@@ -608,7 +609,6 @@ function renderChat(): void {
   if (hasContent) {
     main.empty.hidden = true;
     turns.forEach((turn) => {
-      const run = runs.find((r) => r.id === turn.runId);
       const isLive = liveRun?.id === turn.runId;
       if (isLive) {
         const { el, view } = buildLiveTurn(turn);
@@ -617,38 +617,30 @@ function renderChat(): void {
         main.chat.append(el);
         return;
       }
-      const events = run?.events ?? [];
-      main.chat.append(renderTurn(turn, events, false, "", false));
+      main.chat.append(renderTurn(turn, false, false));
     });
+    // 右栏显示"最后一轮"的详情；正在跑时由增量事件接管
+    const last = turns[turns.length - 1];
+    if (!liveView && last) {
+      const lastRun = runs.find((r) => r.id === last.runId);
+      renderInspector(last, lastRun?.events ?? []);
+    }
   } else {
     main.empty.hidden = false;
     main.chat.append(main.empty);
+    renderInspector(null, []);
   }
 
   // 顶栏
   const conv = currentConversation();
   main.title.textContent = conv ? shortTitle(conv.title, 40) : "新会话";
-  const totalUsage = turns.reduce(
-    (acc, t) => {
-      acc.steps += t.usage.steps;
-      acc.inputTokens += t.usage.inputTokens;
-      acc.outputTokens += t.usage.outputTokens;
-      acc.toolCalls += t.usage.toolCalls;
-      acc.denied += t.usage.denied;
-      acc.failures += t.usage.failures;
-      acc.compactions += t.usage.compactions;
-      acc.savedChars += t.usage.savedChars;
-      acc.elapsedMs += t.usage.elapsedMs;
-      return acc;
-    },
-    { steps: 0, inputTokens: 0, outputTokens: 0, toolCalls: 0, denied: 0, failures: 0, compactions: 0, savedChars: 0, elapsedMs: 0 },
-  );
-  main.usage.textContent = totalUsage.steps ? formatUsage(totalUsage) : "";
+  updateTopbarUsage();
 
   const busy = isBusy();
   main.submit.disabled = busy;
   main.submit.textContent = busy ? "运行中…" : (runs.length > 0 ? "接着说" : "发送");
   main.resume.hidden = !latestRunResumable();
+  main.cancel.hidden = !busy;
   // 徽章必须跟着 busy 一起复位，否则跑完之后还挂着"运行中…"
   main.status.hidden = !busy;
   if (busy) main.status.textContent = "运行中…";
@@ -711,9 +703,18 @@ async function loadConversations(): Promise<void> {
 
 let conversationGeneration = 0;
 
+function setHash(rootId: string): void {
+  const next = rootId ? `#/c/${rootId}` : "#/";
+  if (window.location.hash !== next) {
+    // replaceState：不往历史里塞一堆条目，但地址栏能复制分享
+    window.history.replaceState(null, "", next);
+  }
+}
+
 async function openConversation(rootId: string, opts: { silent?: boolean } = {}): Promise<void> {
   const gen = ++conversationGeneration;
   conversationRoot = rootId;
+  setHash(rootId);
   remember(LAST_CONVERSATION_KEY, rootId);
   closeStream?.();
   closeStream = null;
@@ -796,6 +797,7 @@ function newChat(): void {
   liveRun = null;
   liveEvents = [];
   forget(LAST_CONVERSATION_KEY);
+  setHash("");
   main.task.value = "";
   main.chat.replaceChildren(main.empty);
   main.empty.hidden = false;
@@ -881,6 +883,26 @@ function canContinue(run: RunRow): boolean {
   return run.status === "done" || run.status === "error";
 }
 
+async function cancelRun(): Promise<void> {
+  const running = [...runs].reverse().find(
+    (r) => r.status === "running" || r.status === "queued",
+  );
+  if (!running) {
+    setStatus("没有正在跑的 run", "error");
+    return;
+  }
+  main.cancel.disabled = true;
+  setStatus("正在停止…（等当前这步结束）");
+  try {
+    await api.cancel(running.id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    setStatus(`取消失败：${message}`, "error");
+  } finally {
+    main.cancel.disabled = false;
+  }
+}
+
 async function resumeRun(): Promise<void> {
   const last = runs[runs.length - 1];
   if (!last) return;
@@ -910,9 +932,14 @@ async function init(): Promise<void> {
   await loadWorkspaces();
   await loadConversations();
 
+  // 地址栏里的会话优先（可分享、可后退），其次才是上次打开的那个
+  const fromHash = (window.location.hash.match(/^#\/c\/([0-9a-zA-Z_-]+)$/) ?? [])[1] ?? "";
   const saved = recall(LAST_CONVERSATION_KEY);
-  if (saved && conversations.some((c) => c.root_id === saved)) {
-    await openConversation(saved, { silent: true });
+  const target = [fromHash, saved].find(
+    (id) => id && conversations.some((c) => c.root_id === id),
+  );
+  if (target) {
+    await openConversation(target, { silent: true });
   } else {
     render();
   }
@@ -922,6 +949,7 @@ main.submit.addEventListener("click", () => void submit());
 main.task.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void submit();
 });
+main.cancel.addEventListener("click", () => void cancelRun());
 main.resume.addEventListener("click", () => void resumeRun());
 sidebar.newChat.addEventListener("click", () => newChat());
 sidebar.refresh.addEventListener("click", () => {
@@ -942,5 +970,27 @@ for (const example of document.querySelectorAll<HTMLButtonElement>(".example")) 
     main.task.focus();
   });
 }
+
+/* ------------------------------------------------------------------ 右栏开关 */
+
+const INSPECTOR_KEY = "minicode:inspector";
+
+function setInspector(open: boolean): void {
+  panel.appRoot.classList.toggle("inspector-hidden", !open);
+  remember(INSPECTOR_KEY, open ? "1" : "0");
+}
+
+function inspectorOpen(): boolean {
+  return !panel.appRoot.classList.contains("inspector-hidden");
+}
+
+panel.toggle.addEventListener("click", () => setInspector(!inspectorOpen()));
+panel.close.addEventListener("click", () => setInspector(false));
+setInspector(recall(INSPECTOR_KEY) !== "0");   // 默认展开
+
+window.addEventListener("hashchange", () => {
+  const id = (window.location.hash.match(/^#\/c\/([0-9a-zA-Z_-]+)$/) ?? [])[1] ?? "";
+  if (id && id !== conversationRoot) void openConversation(id, { silent: true });
+});
 
 void init();

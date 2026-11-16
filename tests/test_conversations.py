@@ -119,7 +119,10 @@ def test_workspaces_includes_default(tmp_path):
     assert any(w["is_default"] for w in data["workspaces"])
 
 
-def test_workspaces_from_history(tmp_path):
+def test_workspaces_from_history(tmp_path, monkeypatch):
+    """列工作区时只关心"从历史里来"，临时目录过滤单独测（下面那条）。
+    pytest 的 tmp_path 本身就在临时目录里，所以这里放行过滤器。"""
+    monkeypatch.setattr("minicode.service.app.is_usable_workspace", lambda p: True)
     other = tmp_path / "另一个工作区"
     other.mkdir()
     client = _client(tmp_path)
@@ -156,3 +159,15 @@ def test_workspace_accepted_and_resolved(tmp_path):
     run_id = client.post("/runs", json={"task": "x", "workspace": str(other)}).json()["id"]
     body = client.get(f"/runs/{run_id}").json()
     assert body["workspace"] == str(other.resolve())
+
+
+def test_workspace_filter_drops_temp_dirs():
+    """临时/测试目录不该进下拉框（实测被 pytest-of-* 刷过一整屏）。"""
+    from minicode.service.app import is_usable_workspace
+
+    assert is_usable_workspace("D:\\work\\myproject") is True
+    assert is_usable_workspace("C:/Users/me/projects/demo") is True
+    assert is_usable_workspace("D:/repo/pytest-of-33714/pytest-3/test_x0") is False
+    assert is_usable_workspace("/tmp/pytest-abc/test_x") is False
+    assert is_usable_workspace("C:/Users/me/AppData/Local/Temp/xyz") is False
+    assert is_usable_workspace("") is False

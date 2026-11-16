@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from minicode.tools.base import ToolResult
@@ -57,6 +58,7 @@ class BashTool:
             "cwd": str(cwd),
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
+            "stdin": subprocess.DEVNULL,      # 交互式命令不该等服务进程的输入
         }
         if os.name != "nt":
             # 单独开一个进程组，超时的时候能把孙进程一起收拾掉
@@ -67,14 +69,10 @@ class BashTool:
         except FileNotFoundError as exc:
             return ToolResult(f"启动 shell 失败: {exc}", exit_code=127)
 
-        try:
-            raw_out, raw_err = proc.communicate(timeout=self.timeout)
-        except subprocess.TimeoutExpired:
-            _kill_tree(proc)
-            try:
-                raw_out, raw_err = proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                raw_out, raw_err = b"", b""
+        raw_out, raw_err, truncated, timed_out = _capture(
+            proc, MAX_BYTES, self.timeout)
+
+        if timed_out:
             return ToolResult(
                 f"命令超时（{self.timeout}s），已连同子进程一起杀掉",
                 exit_code=124,
@@ -86,15 +84,80 @@ class BashTool:
         body = out
         if err:
             body = f"{out}\n[stderr]\n{err}" if out else f"[stderr]\n{err}"
-
-        truncated = len(body.encode("utf-8", "replace")) > MAX_BYTES
         if truncated:
-            body = body.encode("utf-8", "replace")[:MAX_BYTES].decode("utf-8", "replace")
+            body = (
+                f"{body}\n\n[输出被截断：超过 {MAX_BYTES} 字节，命令已终止]"
+            )
 
         return ToolResult(
             body, exit_code=proc.returncode,
             meta={"command": command, "truncated": truncated, "shell": sys.platform},
         )
+
+
+def _capture(
+    proc: subprocess.Popen, cap: int, timeout: float
+) -> tuple[bytes, bytes, bool, bool]:
+    """边读边攒，最多攒 cap 字节。返回 (stdout, stderr, 是否截断, 是否超时)。
+
+    为什么不能 communicate()：它是"全部读完再返回"，输出上 GB 时内存先爆、
+    截断再也没机会发生。这里两个线程各读一路，攒满上限就杀进程，
+    剩下的字节继续读掉（防止管道堵住）但直接丢弃。
+    """
+    bufs: dict[int, bytearray] = {1: bytearray(), 2: bytearray()}
+    state = {"total": 0, "truncated": False, "killed": False}
+    lock = threading.Lock()
+
+    def reader(pipe, key: int) -> None:
+        try:
+            while True:
+                data = pipe.read(4096)
+                if not data:
+                    break
+                with lock:
+                    room = cap - state["total"]
+                    if room > 0:
+                        take = data[:room]
+                        bufs[key].extend(take)
+                        state["total"] += len(take)
+                        if len(take) < len(data):
+                            state["truncated"] = True
+                    else:
+                        state["truncated"] = True
+                    need_kill = state["truncated"] and not state["killed"]
+                    if need_kill:
+                        state["killed"] = True
+                if need_kill:
+                    _kill_tree(proc)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    threads = [
+        threading.Thread(target=reader, args=(proc.stdout, 1), daemon=True),
+        threading.Thread(target=reader, args=(proc.stderr, 2), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_tree(proc)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    for t in threads:
+        t.join(timeout=5)
+
+    return bytes(bufs[1]), bytes(bufs[2]), state["truncated"], timed_out
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:

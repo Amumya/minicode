@@ -15,6 +15,7 @@
   --user-bubble: #f1f5ff;
   --radius: 10px;
   --sidebar-w: 288px;
+  --inspector-w: 340px;
 }
 
 * {
@@ -54,8 +55,16 @@ button {
 
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--inspector-w);
   height: 100vh;
+}
+
+/* 收起右侧面板：第三列压成 0，面板隐藏 */
+.app.inspector-hidden {
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0;
+}
+.app.inspector-hidden .inspector {
+  display: none;
 }
 
 /* ------------------------------------------------------------------ 左栏 */
@@ -259,6 +268,12 @@ button {
   gap: 8px;
   font-weight: 600;
   min-width: 0;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .topbar-title #title {
@@ -626,6 +641,9 @@ summary:hover {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
   }
+  .inspector {
+    display: none;
+  }
   .sidebar {
     grid-template-rows: auto auto;
     border-right: none;
@@ -823,3 +841,107 @@ summary:hover {
 .markdown th { background: var(--panel-2); font-weight: 600; }
 .markdown a { color: var(--info); text-decoration: underline; }
 .markdown hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+
+
+/* ------------------------------------------------------------------ 右侧详情面板 */
+
+.inspector {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--bg-soft);
+  border-left: 1px solid var(--border);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.inspector-title {
+  letter-spacing: 0.04em;
+}
+
+.inspector-body {
+  overflow-y: auto;
+  padding: 8px 10px 16px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-height: 0;
+}
+
+.inspector-section {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 6px 10px;
+}
+
+.inspector-section > summary {
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.inspector-section[open] > summary {
+  color: var(--text);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.inspector-section .tool-list {
+  margin: 0;
+  padding-left: 0;
+}
+
+.inspector .tool {
+  background: var(--bg);
+}
+
+.inspector .event-list {
+  max-height: 300px;
+}
+
+.inspector .board-grid {
+  grid-template-columns: 1fr;
+}
+
+/* 中等宽度：收窄一点，别把中间对话区挤没 */
+@media (max-width: 1360px) {
+  :root {
+    --inspector-w: 300px;
+    --sidebar-w: 260px;
+  }
+}
+
+/* 窄屏：右栏默认不占地方；需要时用顶栏按钮覆盖 */
+@media (max-width: 1120px) {
+  .app {
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0;
+  }
+  .inspector {
+    display: none;
+  }
+  .app.inspector-shown {
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--inspector-w);
+  }
+  .app.inspector-shown .inspector {
+    display: grid;
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: var(--inspector-w);
+    z-index: 20;
+    box-shadow: -8px 0 24px rgba(16, 24, 40, 0.12);
+  }
+}

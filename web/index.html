@@ -7,7 +7,7 @@
     <link rel="icon" href="data:," />
   </head>
   <body>
-    <div class="app">
+    <div class="app" id="appRoot">
       <!-- 左栏：工作区 + 会话列表 -->
       <aside class="sidebar">
         <div class="brand">
@@ -35,14 +35,17 @@
         </footer>
       </aside>
 
-      <!-- 右侧：对话主区 -->
+      <!-- 中间：对话主区 -->
       <main class="main">
         <header class="topbar">
           <div class="topbar-title">
             <span id="title">新会话</span>
             <span id="runStatus" class="badge" role="status" aria-live="polite" hidden></span>
           </div>
-          <div id="usage" class="usage muted"></div>
+          <div class="topbar-right">
+            <div id="usage" class="usage muted"></div>
+            <button id="toggleInspector" class="icon" title="显示/隐藏详情面板" aria-label="显示或隐藏详情面板">▤</button>
+          </div>
         </header>
 
         <section id="chat" class="chat">
@@ -79,10 +82,38 @@
           </div>
           <div class="composer-foot">
             <span id="status" class="muted" role="status" aria-live="polite"></span>
+            <button id="cancel" class="link" hidden>停止</button>
             <button id="resume" class="link" hidden>继续跑</button>
           </div>
         </section>
       </main>
+
+      <!-- 右栏：详情面板（思考 / 任务看板 / 原始事件） -->
+      <aside class="inspector" id="inspector" aria-label="详情面板">
+        <div class="inspector-head">
+          <span class="inspector-title">详情</span>
+          <button id="closeInspector" class="icon" title="收起详情面板" aria-label="收起详情面板">×</button>
+        </div>
+
+        <div class="inspector-body">
+          <details class="inspector-section" id="thinkSection" open>
+            <summary>思考 <span id="thinkMeta" class="muted">还没有工具调用</span></summary>
+            <ul id="thinkList" class="tool-list"></ul>
+          </details>
+
+          <details class="inspector-section" id="boardSection">
+            <summary>任务看板 <span id="boardMeta" class="muted"></span></summary>
+            <div id="boardBody" class="board-body">
+              <p class="muted">这一轮没有启用任务图</p>
+            </div>
+          </details>
+
+          <details class="inspector-section" id="rawSection">
+            <summary>原始事件 <span id="rawMeta" class="muted"></span></summary>
+            <div id="rawList" class="event-list"></div>
+          </details>
+        </div>
+      </aside>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

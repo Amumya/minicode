@@ -38,6 +38,8 @@ export interface ToolCallView {
 
 export interface Turn {
   runId: string;
+  /** 结束原因（end_turn / max_steps / cancelled / provider_error…） */
+  stopReason: string;
   task: string;
   status: string;
   ok: boolean;
@@ -92,6 +94,7 @@ export function buildTurn(run: RunLike): Turn {
   }
   return {
     runId: run.id,
+    stopReason: typeof result.stop_reason === "string" ? result.stop_reason : "",
     task: run.task ?? "",
     status: run.status ?? "queued",
     ok: result.ok === true,

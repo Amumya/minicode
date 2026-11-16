@@ -61,6 +61,19 @@ ProviderFactory = Callable[[Settings], object]
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
+def is_usable_workspace(path: str) -> bool:
+    """这个工作区值得放进下拉框吗。
+
+    跑测试时会给 run 传 tmp_path，这些路径进了下拉框会占满列表
+    （实测出现过一整屏 pytest-of-*）。这里只挡明显的临时/测试目录。
+    """
+    low = (path or "").lower().replace("\\", "/")
+    if not low:
+        return False
+    junk = ("pytest-of-", "/tmp/", "appdata/local/temp", "/temp/")
+    return not any(token in low for token in junk)
+
+
 class RunRequest(BaseModel):
     task: str = Field(min_length=1, max_length=20000, description="任务内容")
     model: str | None = None
@@ -77,6 +90,11 @@ class FollowupRequest(BaseModel):
     """多轮对话：在某个已结束的 run 后面接着说一句。"""
     text: str = Field(min_length=1, max_length=8000)
     max_steps: int | None = Field(default=None, ge=1, le=50)
+
+
+class CancelRequest(BaseModel):
+    """取消正在跑的 run。空对象即可，留这个类是为了以后能带原因。"""
+    reason: str = ""
 
 
 class ResumeRequest(BaseModel):
@@ -114,6 +132,9 @@ def create_app(
     #   2) followup 不能挂到一个还在跑的 run 上（会从半截检查点分叉出并发 run）。
     active_runs: set[str] = set()
 
+    # 每个 run 一个取消信号，worker 每步开头看一眼
+    cancel_flags: dict[str, threading.Event] = {}
+
     def _factory(settings_obj: Settings):
         if provider_factory is not None:
             return provider_factory(settings_obj)
@@ -149,6 +170,7 @@ def create_app(
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
                 resume: dict | None) -> None:
         active_runs.add(state.id)
+        cancel_flags[state.id] = threading.Event()
         state.status = "running"
         st.update(state)
         rec = Recorder(on_event=lambda ev: _emit(state, cs, ev, loop_ref))
@@ -182,6 +204,8 @@ def create_app(
                 resume=resume,
                 on_step=on_step,
                 compactor=compactor,
+                should_stop=lambda: cancel_flags.get(state.id) is not None
+                and cancel_flags[state.id].is_set(),
             )
             state.result = result.to_dict()
             if todo is not None:
@@ -198,6 +222,7 @@ def create_app(
             state.status = "error"
         finally:
             active_runs.discard(state.id)
+            cancel_flags.pop(state.id, None)
             st.update(state)
             try:
                 loop_ref.call_soon_threadsafe(cs.set)
@@ -260,7 +285,7 @@ def create_app(
         """
         seen: list[str] = []
         for run in sorted(st.all(), key=lambda r: r.updated_at, reverse=True):
-            if run.workspace and run.workspace not in seen:
+            if run.workspace and run.workspace not in seen and is_usable_workspace(run.workspace):
                 seen.append(run.workspace)
 
         items = []
@@ -375,9 +400,47 @@ def create_app(
             "resumed_from_step": checkpoint.get("step"),
         }
 
+    @app.post("/runs/{run_id}/cancel", status_code=202)
+    async def cancel_run(run_id: str, req: CancelRequest | None = None) -> dict:
+        """请求取消一个正在跑的 run。
+
+        返回 202 而不是 200：这里只是把旗子插上，真正停下来要等当前这步结束。
+        """
+        state = st.get(run_id)
+        if state is None:
+            raise HTTPException(404, "没有这个 run")
+        if state.status not in ("running", "queued"):
+            raise HTTPException(409, f"这个 run 已经是 {state.status}，不用取消")
+        flag = cancel_flags.get(run_id)
+        if flag is None:
+            # 状态是 running 但没有本进程的 worker：僵尸，直接标成取消
+            state.status = "error"
+            state.error = "已取消（没有活跃的 worker）"
+            st.update(state)
+            return {"id": run_id, "status": state.status, "cancelled": True}
+        flag.set()
+        return {"id": run_id, "status": "running", "cancelled": True,
+                "note": "正在当前这步结束后停止"}
+
     @app.get("/runs")
     def list_runs() -> dict:
         return {"runs": [r.to_dict() for r in st.all()]}
+
+    @app.delete("/runs/{run_id}")
+    def delete_run(run_id: str) -> dict:
+        """删掉一个 run（连同事件和检查点）。
+
+        为什么需要：测试往真实 Redis 里写过脏数据之后，界面上只能看着它 —— 没有删的入口。
+        """
+        state = st.get(run_id)
+        if state is None:
+            raise HTTPException(404, "没有这个 run")
+        if state.status in ("running", "queued") and run_id in active_runs:
+            raise HTTPException(409, "这个 run 还在跑，先取消再删")
+        st.delete(run_id)
+        changed.pop(run_id, None)
+        cancel_flags.pop(run_id, None)
+        return {"id": run_id, "deleted": True}
 
     @app.get("/runs/{run_id}")
     def get_run(run_id: str, events: bool = False) -> dict:

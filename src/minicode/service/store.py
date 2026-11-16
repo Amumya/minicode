@@ -73,6 +73,7 @@ class SessionStore(Protocol):
     def read_events(self, run_id: str, start: int = 0) -> list[dict]: ...
     def save_checkpoint(self, run_id: str, checkpoint: dict) -> None: ...
     def get_checkpoint(self, run_id: str) -> dict | None: ...
+    def delete(self, run_id: str) -> bool: ...
 
 
 # 两种 store 的 all() 必须返回同样的上限，否则同一份数据在两种后端下行为不同
@@ -129,6 +130,12 @@ class InMemoryStore:
 
     def get_checkpoint(self, run_id: str) -> dict | None:
         return self._checkpoints.get(run_id)
+
+    def delete(self, run_id: str) -> bool:
+        existed = self._runs.pop(run_id, None) is not None
+        self._events.pop(run_id, None)
+        self._checkpoints.pop(run_id, None)
+        return existed
 
 
 class RedisStore:
@@ -258,6 +265,17 @@ class RedisStore:
     def get_checkpoint(self, run_id: str) -> dict | None:
         raw = self._r.get(self._k_ckpt(run_id))
         return json.loads(raw) if raw else None
+
+    def delete(self, run_id: str) -> bool:
+        """删掉一个 run 和它的全部附属数据（事件、检查点、索引）。"""
+        existed = bool(self._r.exists(self._k_run(run_id)))
+        pipe = self._r.pipeline()
+        pipe.delete(self._k_run(run_id))
+        pipe.delete(self._k_events(run_id))
+        pipe.delete(self._k_ckpt(run_id))
+        pipe.zrem(self._k_index(), run_id)
+        pipe.execute()
+        return existed
 
     def clear(self) -> None:
         """测试用：把这个前缀下的 key 清掉。"""
