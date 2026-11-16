@@ -38,6 +38,8 @@ def default_system(
     python_hint: str | None = None,
     plan_hint: bool = False,
     tasks_hint: bool = False,
+    memory_hint: bool = False,
+    memory_snapshot: str | None = None,
 ) -> str:
     """拼出系统提示词。
 
@@ -75,6 +77,19 @@ def default_system(
             "做完 complete_task 收尾 —— 完成时会告诉你解锁了哪些任务。"
             "简单的一两步任务直接用 bash 做，不要为了用而用。"
         )
+
+    if memory_hint:
+        text += (
+            "\n\n有一组长期记忆工具（remember / recall / forget）。"
+            "遇到以后还用得上的事实——项目约定、环境事实、用户偏好、踩过的坑——"
+            "就用 remember 记一条，一句话说具体；"
+            "不要记密码、密钥、一次性的中间结果和大段代码。"
+            "系统提示词里只会带上和当前任务最相关的一小部分记忆，"
+            "需要更多上下文时用 recall 查。"
+        )
+
+    if memory_snapshot:
+        text += "\n\n已有的长期记忆（和这次任务相关的部分）：\n" + memory_snapshot
 
     catalog = ""
     if skills is not None:

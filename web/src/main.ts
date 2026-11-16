@@ -120,6 +120,7 @@ const main = {
   optSkills: el<HTMLInputElement>("optSkills"),
   optCompact: el<HTMLInputElement>("optCompact"),
   optTasks: el<HTMLInputElement>("optTasks"),
+  optMemory: el<HTMLInputElement>("optMemory"),
 };
 
 /* ------------------------------------------------------------------ 展开状态
@@ -344,6 +345,9 @@ const panel = {
   boardSection: el<HTMLDetailsElement>("boardSection"),
   boardBody: el<HTMLElement>("boardBody"),
   boardMeta: el<HTMLElement>("boardMeta"),
+  memorySection: el<HTMLDetailsElement>("memorySection"),
+  memoryList: el<HTMLElement>("memoryList"),
+  memoryMeta: el<HTMLElement>("memoryMeta"),
   rawSection: el<HTMLDetailsElement>("rawSection"),
   rawList: el<HTMLElement>("rawList"),
   rawMeta: el<HTMLElement>("rawMeta"),
@@ -422,6 +426,7 @@ function renderInspector(turn: Turn | null, events: AgentEvent[]): void {
     panel.rawMeta.textContent = "";
     renderBoardInto(null);
     panel.boardBody.replaceChildren(h("p", { class: "muted" }, "本轮未启用任务图"));
+    void renderMemory(undefined, false);
     return;
   }
 
@@ -444,6 +449,45 @@ function renderInspector(turn: Turn | null, events: AgentEvent[]): void {
   panel.rawMeta.textContent = `${merged.length} 条`;
 
   void loadBoard(turn.runId);
+  const run = runs.find((r) => r.id === turn.runId);
+  void renderMemory(run?.workspace, run?.memory === true);
+}
+
+/** 右栏的"记忆"分区：显示这个工作区里存下的长期笔记。 */
+async function renderMemory(workspace: string | undefined, enabled: boolean): Promise<void> {
+  const box = panel.memoryList;
+  panel.memoryMeta.textContent = "";
+  if (!enabled) {
+    box.replaceChildren(h("p", { class: "muted" }, "这一轮没有启用记忆"));
+    return;
+  }
+  if (!workspace) {
+    box.replaceChildren(h("p", { class: "muted" }, "没有工作区信息"));
+    return;
+  }
+  box.replaceChildren(h("p", { class: "muted" }, "加载中…"));
+  try {
+    const data = await api.memory(workspace);
+    if (data.entries.length === 0) {
+      box.replaceChildren(h("p", { class: "muted" }, "还没有记忆（让它在对话里记住点什么）"));
+      panel.memoryMeta.textContent = "0 条";
+      return;
+    }
+    panel.memoryMeta.textContent = `${data.total} 条`;
+    const list = h("ul", { class: "memory-items" });
+    for (const entry of data.entries) {
+      const li = h("li", { class: "memory-item" });
+      li.append(h("span", { class: "memory-text" }, entry.text));
+      if (entry.tags.length) {
+        li.append(h("span", { class: "memory-tags muted" }, entry.tags.join(" · ")));
+      }
+      list.append(li);
+    }
+    box.replaceChildren(list);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    box.replaceChildren(h("p", { class: "muted" }, `记忆加载失败：${message}`));
+  }
 }
 
 /* ------------------------------------------------------------------ 实时增量渲染
@@ -844,19 +888,20 @@ async function submit(): Promise<void> {
   try {
     let runId: string;
     if (canFollow && lastRun) {
-      const resp = await api.followup(lastRun.id, task, Number(main.maxSteps.value) || 8);
+      const resp = await api.followup(lastRun.id, task, Number(main.maxSteps.value) || 20);
       runId = resp.id;
     } else {
       const resp = await api.createRun({
         task,
         workspace: workspace || undefined,
         model: main.model.value || undefined,
-        maxSteps: Number(main.maxSteps.value) || 8,
+        maxSteps: Number(main.maxSteps.value) || 20,
         includeFiles: main.optFiles.checked,
         plan: main.optPlan.checked,
         skills: main.optSkills.checked,
         compact: main.optCompact.checked,
         tasks: main.optTasks.checked,
+        memory: main.optMemory.checked,
       });
       runId = resp.id;
       if (!conversationRoot) conversationRoot = runId;
@@ -871,6 +916,9 @@ async function submit(): Promise<void> {
       result: null,
       created_at: Date.now() / 1000,
       events: [],
+      workspace: workspace || undefined,
+      // 续聊沿用上一轮的开关（服务端也是这么继承的）
+      memory: canFollow ? lastRun?.memory : main.optMemory.checked,
     };
     if (canFollow) {
       runs = [...runs, row];
@@ -949,7 +997,7 @@ async function resumeRun(): Promise<void> {
   if (!last) return;
   setStatus("正在从检查点恢复…");
   try {
-    await api.resume(last.id, Math.max(Number(main.maxSteps.value) || 8, 8));
+    await api.resume(last.id, Math.max(Number(main.maxSteps.value) || 20, 8));
     const refreshed = await api.run(last.id);
     runs = runs.map((r) => (r.id === last.id ? { ...refreshed, events: r.events } : r));
     attachStream(runs[runs.length - 1]);

@@ -19,6 +19,7 @@ from minicode import __version__
 from minicode.compact import CompactConfig, Compactor
 from minicode.config import Settings
 from minicode.events import Recorder
+from minicode.memory import MemoryStore
 from minicode.loop import run as run_loop
 from minicode.prompts import default_system
 from minicode.skills import SkillLoader
@@ -54,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="子代理的步数上限，默认 6")
     r.add_argument("--tasks", action="store_true",
                    help="挂上任务图工具（建/改/列/查/认领/完成），带依赖和环检测")
+    r.add_argument("--memory", action="store_true",
+                   help="挂上长期记忆工具（remember / recall / forget），存 .minicode/memory.jsonl")
     r.add_argument("--compact-max-chars", type=int, default=4000,
                    help="单个工具结果超过多少字符就落盘（默认 4000）")
     r.add_argument("--compact-keep", type=int, default=3,
@@ -148,8 +151,9 @@ def cmd_run(args, provider_factory=None) -> int:
             max_steps=args.subagent_steps,
         ))
     task_store = TaskStore(workspace / ".minicode" / "tasks") if args.tasks else None
+    memory = MemoryStore(workspace / ".minicode" / "memory.jsonl") if args.memory else None
     tools = build_registry(files=args.files, todo=todo, skills=skills_loader,
-                           tasks=task_store, extra=extra_tools)
+                           tasks=task_store, memory=memory, extra=extra_tools)
 
     rec = Recorder()
     started = time.time()
@@ -166,6 +170,8 @@ def cmd_run(args, provider_factory=None) -> int:
             python_hint=None if args.no_python_hint else sys.executable,
             plan_hint=args.plan,
             tasks_hint=task_store is not None,
+            memory_hint=memory is not None,
+            memory_snapshot=(memory.snapshot(args.task) if memory is not None else None),
         ),
     )
     elapsed = time.time() - started

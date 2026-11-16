@@ -102,6 +102,16 @@ window.fetch = async (url, opts = {}) => {
   if (url.startsWith("/runs/run-a")) return reply(HISTORY_RUN);
   if (url === "/runs" && method === "POST") return reply({ id: "run-new" });
   if (url.startsWith("/runs/run-new/followup")) return reply({ id: "run-followup" });
+  if (url.startsWith("/memory")) {
+    return reply({
+      workspace: "D:\\work\\demo",
+      total: 2,
+      entries: [
+        { id: "m1", text: "测试要用 .venv 里的 python", tags: ["环境"], created_at: nowSec() - 100 },
+        { id: "m2", text: "提交信息用中文写", tags: [], created_at: nowSec() - 200 },
+      ],
+    });
+  }
   if (url.endsWith("/tasks")) {
     return reply({
       enabled: true,
@@ -180,7 +190,7 @@ check("每个会话行都有删除按钮", doc.querySelectorAll("#conversations 
   `${doc.querySelectorAll("#conversations .conv-del").length} 个`);
 
 // 默认值：五个开关全选、步数 20（实测 8 步不够跑多步任务）
-const defaultSwitches = ["#optFiles", "#optPlan", "#optSkills", "#optCompact", "#optTasks"];
+const defaultSwitches = ["#optFiles", "#optPlan", "#optSkills", "#optCompact", "#optTasks", "#optMemory"];
 check("五个开关默认全选", defaultSwitches.every((sel) => doc.querySelector(sel).checked),
   defaultSwitches.map((sel) => `${sel}=${doc.querySelector(sel).checked}`).join(" "));
 check("默认步数是 20", doc.querySelector("#maxSteps").value === "20",
@@ -217,7 +227,8 @@ check("提交后订阅了事件流", es?.url === "/runs/run-new/events", es?.url
 const sentBody = bodies.get("POST /runs") ?? {};
 check("提交 body 带上了任务和开关",
   sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
-  sentBody.include_files === true && sentBody.tasks === true);
+  sentBody.include_files === true && sentBody.tasks === true &&
+  sentBody.memory === true);
 check("提交时带上默认步数 20", sentBody.max_steps === 20, String(sentBody.max_steps));
 
 const before = calls.filter((c) => c === "POST /runs").length;
@@ -317,6 +328,10 @@ check("危险链接不生成 <a>",
 check("结果在气泡最后一块",
   doc.querySelector("#chat .msg.assistant .bubble")?.lastElementChild?.classList.contains("answer") === true);
 check("气泡里没有工具调用（都在右栏）", !doc.querySelector("#chat .tool-list"));
+check("右栏记忆面板拿到条目", doc.querySelectorAll("#memoryList .memory-item").length === 2,
+  `${doc.querySelectorAll("#memoryList .memory-item").length} 条`);
+check("右栏记忆计数正确", doc.querySelector("#memoryMeta").textContent.includes("2 条"),
+  doc.querySelector("#memoryMeta").textContent);
 check("结束后右栏任务看板渲染出卡片",
   doc.querySelectorAll("#boardBody .task-card").length === 2,
   `${doc.querySelectorAll("#boardBody .task-card").length} 张`);

@@ -42,6 +42,7 @@ from minicode.compact import CompactConfig, Compactor
 from minicode.config import Settings
 from minicode.events import Event, Recorder
 from minicode.loop import run as run_loop
+from minicode.memory import MemoryStore
 from minicode.prompts import default_system
 from minicode.skills import SkillLoader
 from minicode.tasks import TaskStore
@@ -108,6 +109,7 @@ class RunRequest(BaseModel):
     skills: bool = False
     compact: bool = False
     tasks: bool = False
+    memory: bool = False
 
 
 class FollowupRequest(BaseModel):
@@ -212,6 +214,11 @@ def create_app(
     def _tasks_for(state: RunState):
         return TaskStore(Path(state.workspace) / ".minicode" / "tasks") if state.tasks else None
 
+    def _memory_for(state: RunState) -> MemoryStore | None:
+        if not state.memory:
+            return None
+        return MemoryStore(Path(state.workspace) / ".minicode" / "memory.jsonl")
+
     def _tools_for(state: RunState):
         return build_registry(
             files=state.include_files,
@@ -244,7 +251,8 @@ def create_app(
                 provider=_factory(run_settings),
                 tools=build_registry(
                     files=state.include_files, todo=todo,
-                    skills=skills_loader, tasks=_tasks_for(state)),
+                    skills=skills_loader, tasks=_tasks_for(state),
+                    memory=_memory_for(state)),
                 settings=run_settings,
                 workspace=Path(state.workspace),
                 recorder=rec,
@@ -253,6 +261,11 @@ def create_app(
                     python_hint=sys.executable,
                     plan_hint=state.plan,
                     tasks_hint=state.tasks,
+                    memory_hint=state.memory,
+                    memory_snapshot=(
+                        _memory_for(state).snapshot(state.task)
+                        if state.memory else None
+                    ),
                 ),
                 resume=resume,
                 on_step=on_step,
@@ -354,6 +367,31 @@ def create_app(
             })
         return {"workspaces": items, "default": default}
 
+    def _memory_path(workspace: str | None) -> Path:
+        base = _resolve_workspace(workspace)
+        return base / ".minicode" / "memory.jsonl"
+
+    @app.get("/memory")
+    def list_memory(workspace: str | None = None, limit: int = 50) -> dict:
+        """读某个工作区的长期记忆（界面右栏用）。"""
+        store = MemoryStore(_memory_path(workspace))
+        entries = store.entries()
+        entries.sort(key=lambda e: e.created_at, reverse=True)
+        picked = entries[: max(1, min(limit, 200))]
+        return {
+            "workspace": str(_resolve_workspace(workspace).resolve()),
+            "total": len(entries),
+            "entries": [e.to_dict() for e in picked],
+        }
+
+    @app.delete("/memory/{entry_id}")
+    def delete_memory(entry_id: str, workspace: str | None = None) -> dict:
+        """删一条记忆（记错了/过时了要能清）。"""
+        store = MemoryStore(_memory_path(workspace))
+        if not store.forget(entry_id):
+            raise HTTPException(404, "没有这条记忆")
+        return {"id": entry_id, "deleted": True}
+
     @app.delete("/conversations/{root_id}")
     def delete_conversation(root_id: str) -> dict:
         """删掉一个会话（连同它的全部 run、事件、检查点）。
@@ -417,6 +455,7 @@ def create_app(
             skills=req.skills,
             compact=req.compact,
             tasks=req.tasks,
+            memory=req.memory,
         )
         st.create(state)
         _start(state, run_settings, resume=None)
@@ -567,6 +606,7 @@ def create_app(
             skills=parent.skills,
             compact=parent.compact,
             tasks=parent.tasks,
+            memory=parent.memory,
         )
         st.create(state)
         # step=0 表示"从第 1 步开始"，usage 清零：新的一轮单独计费

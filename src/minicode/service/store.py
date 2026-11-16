@@ -38,6 +38,7 @@ class RunState:
     skills: bool = False
     compact: bool = False
     tasks: bool = False
+    memory: bool = False
     parent_id: str | None = None      # 多轮对话：上一轮的 run id
 
     def to_dict(self, events: list[dict] | None = None) -> dict:
@@ -57,6 +58,7 @@ class RunState:
             "skills": self.skills,
             "compact": self.compact,
             "tasks": self.tasks,
+            "memory": self.memory,
             "parent_id": self.parent_id,
         }
         if events is not None:
@@ -189,6 +191,7 @@ class RedisStore:
             "skills": int(run.skills),
             "compact": int(run.compact),
             "tasks": int(run.tasks),
+            "memory": int(run.memory),
             "parent_id": run.parent_id or "",
         })
         # 用自增序号当 zset 分数，不用 created_at：
@@ -219,6 +222,7 @@ class RedisStore:
             skills=bool(int(data.get("skills", 0))),
             compact=bool(int(data.get("compact", 0))),
             tasks=bool(int(data.get("tasks", 0))),
+            memory=bool(int(data.get("memory", 0))),
             parent_id=(data.get("parent_id") or None),
         )
 

@@ -117,3 +117,19 @@ def test_order_when_timestamps_collide(store):
         store.create(run)
         ids.append(run.id)
     assert [r.id for r in store.all()] == list(reversed(ids))
+
+
+def test_memory_flag_round_trips(tmp_path):
+    """memory 开关必须存进去、读出来。
+
+    踩过的坑：to_dict 里加了字段，但 RedisStore.create/get 是**手写映射**，
+    忘了同步 —— 结果 run 确实按记忆跑了，接口读回来却是 memory=False。
+    """
+    import fakeredis
+    from minicode.service.store import RedisStore, RunState
+
+    store = RedisStore(client=fakeredis.FakeRedis(decode_responses=True))
+    store.create(RunState(id="r-memory001", task="t", model="m",
+                          workspace=str(tmp_path), memory=True))
+    assert store.get("r-memory001").memory is True
+    assert store.all()[0].memory is True

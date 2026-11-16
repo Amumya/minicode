@@ -79,6 +79,7 @@
             <label class="check"><input id="optSkills" type="checkbox" checked /> 技能</label>
             <label class="check"><input id="optCompact" type="checkbox" checked /> 压缩</label>
             <label class="check"><input id="optTasks" type="checkbox" checked /> 任务图</label>
+            <label class="check"><input id="optMemory" type="checkbox" checked /> 记忆</label>
           </div>
           <div class="input-row">
             <label for="task" class="sr-only">任务内容</label>
@@ -110,6 +111,13 @@
             <summary>任务看板 <span id="boardMeta" class="muted"></span></summary>
             <div id="boardBody" class="board-body">
               <p class="muted">本轮未启用任务图</p>
+            </div>
+          </details>
+
+          <details class="inspector-section" id="memorySection">
+            <summary>记忆 <span id="memoryMeta" class="muted"></span></summary>
+            <div id="memoryList" class="memory-list">
+              <p class="muted">这一轮没有启用记忆</p>
             </div>
           </details>
 

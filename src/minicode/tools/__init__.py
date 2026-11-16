@@ -12,6 +12,7 @@ from minicode.skills import SkillLoader
 from minicode.tools.base import Registry, ToolResult
 from minicode.tools.bash import BashTool
 from minicode.tools.files import EditFileTool, ReadFileTool, WriteFileTool
+from minicode.tools.memory import memory_tools
 from minicode.tools.skills import LoadSkillTool
 from minicode.tools.tasks import task_tools
 from minicode.tools.todo import TodoList, TodoWriteTool
@@ -37,6 +38,7 @@ def build_registry(
     todo: TodoList | None = None,
     skills: SkillLoader | None = None,
     tasks=None,
+    memory=None,
     extra: list | None = None,
 ) -> Registry:
     reg = Registry()
@@ -51,6 +53,9 @@ def build_registry(
         reg.add(LoadSkillTool(skills))
     if tasks is not None:
         for tool in task_tools(tasks):
+            reg.add(tool)
+    if memory is not None:
+        for tool in memory_tools(memory):
             reg.add(tool)
     for tool in extra or []:
         reg.add(tool)

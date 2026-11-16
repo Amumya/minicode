@@ -26,6 +26,7 @@ function authHeaders(): Record<string, string> {
 export interface RunRow extends RunLike {
   event_count?: number;
   workspace?: string;
+  memory?: boolean;
 }
 
 export interface Workspace {
@@ -42,6 +43,13 @@ export interface Conversation extends ConversationLike {
   created_at: number;
 }
 
+export interface MemoryEntry {
+  id: string;
+  text: string;
+  tags: string[];
+  created_at: number;
+}
+
 export interface CreateRunOptions {
   task: string;
   workspace?: string;
@@ -52,6 +60,7 @@ export interface CreateRunOptions {
   skills?: boolean;
   compact?: boolean;
   tasks?: boolean;
+  memory?: boolean;
 }
 
 export class ApiError extends Error {
@@ -103,6 +112,15 @@ export const api = {
     return request(`/conversations/${encodeURIComponent(rootId)}`, { method: "DELETE" });
   },
 
+  memory(workspace?: string): Promise<{
+    workspace: string;
+    total: number;
+    entries: MemoryEntry[];
+  }> {
+    const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+    return request(`/memory${query}`);
+  },
+
   runs(): Promise<{ runs: RunRow[] }> {
     return request("/runs");
   },
@@ -127,6 +145,7 @@ export const api = {
       skills: opts.skills ?? false,
       compact: opts.compact ?? false,
       tasks: opts.tasks ?? false,
+      memory: opts.memory ?? false,
     };
     if (opts.workspace) body.workspace = opts.workspace;
     if (opts.model) body.model = opts.model;
