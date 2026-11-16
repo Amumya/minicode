@@ -9,6 +9,20 @@ import type { AgentEvent } from "./format.ts";
 import type { ConversationLike, RunLike } from "./chat.ts";
 import type { TaskItem } from "./derive.ts";
 
+/**
+ * 访问令牌。服务端设了 MINICODE_TOKEN 才需要；空字符串 = 不鉴权。
+ * 放模块级变量而不是每次调用传参：所有接口都要用，传参会污染每个方法签名。
+ */
+let accessToken = "";
+
+export function setAccessToken(token: string): void {
+  accessToken = token.trim();
+}
+
+function authHeaders(): Record<string, string> {
+  return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+}
+
 export interface RunRow extends RunLike {
   event_count?: number;
   workspace?: string;
@@ -49,7 +63,8 @@ export class ApiError extends Error {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(url, init);
+  const headers = { ...(init?.headers as Record<string, string> | undefined), ...authHeaders() };
+  const resp = await fetch(url, { ...init, headers });
   if (!resp.ok) {
     let detail = "";
     try {
@@ -82,6 +97,10 @@ export const api = {
 
   conversations(limit = 60): Promise<{ conversations: Conversation[] }> {
     return request(`/conversations?limit=${limit}`);
+  },
+
+  deleteConversation(rootId: string): Promise<{ root_id: string; deleted: number }> {
+    return request(`/conversations/${encodeURIComponent(rootId)}`, { method: "DELETE" });
   },
 
   runs(): Promise<{ runs: RunRow[] }> {
@@ -159,7 +178,9 @@ export function subscribeRun(
   onDone: (kind: string, ev: AgentEvent) => void,
   onError?: () => void,
 ): () => void {
-  const source = new EventSource(`/runs/${encodeURIComponent(runId)}/events`);
+  // EventSource 不能加请求头，所以令牌走查询参数
+  const suffix = accessToken ? `?token=${encodeURIComponent(accessToken)}` : "";
+  const source = new EventSource(`/runs/${encodeURIComponent(runId)}/events${suffix}`);
   for (const kind of EVENT_KINDS) {
     source.addEventListener(kind, (raw) => {
       const message = raw as MessageEvent<string>;

@@ -945,3 +945,71 @@ summary:hover {
     box-shadow: -8px 0 24px rgba(16, 24, 40, 0.12);
   }
 }
+
+
+/* ---- 左栏：会话行 + 删除按钮 ---- */
+
+.conv-row {
+  position: relative;
+  display: flex;
+}
+
+.conv-row .conv {
+  flex: 1;
+  min-width: 0;
+  padding-right: 26px;   /* 给删除按钮留位置 */
+}
+
+.conv-del {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.4;      /* 常驻淡显，否则不悬停发现不了 */
+  transition: opacity 0.12s ease;
+}
+
+.conv-row:hover .conv-del,
+.conv-del:focus-visible {
+  opacity: 1;
+}
+
+.conv-del:hover {
+  background: var(--panel-2);
+  color: var(--danger, #c0392b);
+}
+
+
+/* ---- 左栏：令牌 ---- */
+
+.token-row {
+  display: grid;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+
+.token-row label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.token-row .custom {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+}

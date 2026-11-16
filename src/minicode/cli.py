@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--port", type=int, default=8765)
     d.add_argument("--workspace", type=Path, default=None)
     d.add_argument("--open", action="store_true", help="顺便打开窗口")
+    d.add_argument("--token", default=None, help="访问令牌（设了之后接口要求鉴权）")
     d.add_argument("--mode", choices=("auto", "app", "window"), default="auto")
     d.add_argument("--build", action="store_true", help="启动前重新构建前端")
     d.add_argument("--reload", action="store_true", help="改 Python 代码自动重载")
@@ -85,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1", help="默认只监听本机")
     s.add_argument("--port", type=int, default=8080)
     s.add_argument("--workspace", type=Path, default=None)
+    s.add_argument("--token", default=None, help="访问令牌（设了之后接口要求鉴权）")
 
     return p
 
@@ -282,8 +284,10 @@ def cmd_dev(args) -> int:
     else:
         print("Redis: 没启用（用内存存储 —— 服务重启后历史会丢）")
 
-    app = create_app(default_workspace=args.workspace)
+    app = create_app(default_workspace=args.workspace, token=args.token)
     print(f"服务: http://{args.host}:{args.port}/")
+    if args.token:
+        print("访问令牌已启用：界面右上角（令牌一栏）填同一个值")
     if args.open:
         print("按 Ctrl+C 结束（会一起收掉 Redis）")
     else:
@@ -334,7 +338,9 @@ def cmd_serve(args) -> int:
 
     from minicode.service import create_app
 
-    app = create_app(default_workspace=args.workspace)
+    app = create_app(default_workspace=args.workspace, token=args.token)
+    if args.token:
+        print("访问令牌已启用：浏览器界面里需要填同一个令牌")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

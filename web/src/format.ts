@@ -59,8 +59,8 @@ export function describeEvent(ev: AgentEvent): Described {
     }
     case "resume": {
       return {
-        label: "继续",
-        detail: `从第 ${num(d.from_step) ?? "?"} 步接着跑（上限 ${num(d.max_steps) ?? "?"}）`,
+        label: "恢复",
+        detail: `从第 ${num(d.from_step) ?? "?"} 步恢复（上限 ${num(d.max_steps) ?? "?"}）`,
         tone: "info",
       };
     }
@@ -77,7 +77,7 @@ export function describeEvent(ev: AgentEvent): Described {
     }
     case "assistant_delta":
       // 增量事件只在流式时出现；原始事件列表里只显示一小段，别把每条都铺开
-      return { label: "思考", detail: clip(str(d.text), 60), tone: "info" };
+      return { label: "模型输出", detail: clip(str(d.text), 60), tone: "info" };
     case "tool_call": {
       const args = asRecord(d.args);
       const target = str(args.command) || str(args.path) || "";
@@ -91,7 +91,7 @@ export function describeEvent(ev: AgentEvent): Described {
     }
     case "denied": {
       return {
-        label: "被拒",
+        label: "已拒绝",
         detail: `${str(d.reason, "?")}：${clip(str(d.detail), 70)}`,
         tone: "warn",
       };
@@ -102,8 +102,8 @@ export function describeEvent(ev: AgentEvent): Described {
     case "finish": {
       const ok = d.ok === true;
       return {
-        label: "收尾",
-        detail: ok ? `完成（${str(d.reason, "?")}）` : `没完成（${str(d.reason, "?")}）`,
+        label: "完成",
+        detail: ok ? `完成（${str(d.reason, "?")}）` : `未完成（${str(d.reason, "?")}）`,
         tone: ok ? "ok" : "error",
       };
     }
@@ -111,7 +111,7 @@ export function describeEvent(ev: AgentEvent): Described {
       const status = str(d.status, "?");
       return {
         label: "结束",
-        detail: status === "error" ? `出错：${clip(str(d.error), 80)}` : status,
+        detail: status === "error" ? `失败：${clip(str(d.error), 80)}` : status,
         tone: status === "error" ? "error" : "ok",
       };
     }

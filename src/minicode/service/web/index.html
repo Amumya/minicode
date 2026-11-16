@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>minicode</title>
     <link rel="icon" href="data:," />
-    <script type="module" crossorigin src="./assets/index-Cs_1jpxn.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DvkPGNOv.css">
+    <script type="module" crossorigin src="./assets/index-C8iSWuv0.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-D9zCsf-v.css">
   </head>
   <body>
     <div class="app" id="appRoot">
@@ -23,13 +23,18 @@
             <button id="refreshWs" class="icon" title="刷新工作区列表">↻</button>
           </div>
           <select id="workspace"></select>
-          <input id="workspaceCustom" class="custom" placeholder="或填一个路径…" />
+          <input id="workspaceCustom" class="custom" placeholder="或输入自定义路径" />
+        </div>
+
+        <div class="token-row">
+          <label for="token">令牌</label>
+          <input id="token" class="custom" type="password" placeholder="服务端设了才需要" autocomplete="off" />
         </div>
 
         <button id="newChat" class="new-chat">＋ 新会话</button>
 
         <nav id="conversations" class="conversations" aria-label="历史会话">
-          <p class="muted hint">还没有会话</p>
+          <p class="muted hint">暂无会话</p>
         </nav>
 
         <footer class="sidebar-foot">
@@ -52,12 +57,12 @@
 
         <section id="chat" class="chat">
           <div class="empty" id="empty">
-            <p class="empty-title">开始一个新任务</p>
-            <p class="muted">在下面输入，或者在左侧选一个历史会话。</p>
+            <p class="empty-title">新建任务</p>
+            <p class="muted">在下方输入任务，或从左侧选择历史会话。</p>
             <div class="examples">
-              <button class="example" data-task="数一下 src 下有多少 py 文件">数一下 src 下有多少 py 文件</button>
-              <button class="example" data-task="看一下 README，用三句话总结这个项目">用三句话总结这个项目</button>
-              <button class="example" data-task="找出 tests 里覆盖最少的一个模块">找出覆盖最少的模块</button>
+              <button class="example" data-task="统计 src 目录下的 Python 文件数量">统计 src 目录下的 Python 文件数量</button>
+              <button class="example" data-task="阅读 README，用三句话总结这个项目">用三句话总结这个项目</button>
+              <button class="example" data-task="找出测试覆盖率最低的模块">找出覆盖率最低的模块</button>
             </div>
           </div>
         </section>
@@ -69,23 +74,23 @@
               <option value="deepseek-flash">deepseek-flash</option>
               <option value="deepseek-v4-pro">deepseek-v4-pro</option>
             </select>
-            <label title="最大步数">步数<input id="maxSteps" type="number" min="1" max="50" value="8" /></label>
+            <label title="最大步数">步数<input id="maxSteps" type="number" min="1" max="50" value="20" /></label>
             <span class="divider"></span>
-            <label class="check"><input id="optFiles" type="checkbox" /> 文件工具</label>
-            <label class="check"><input id="optPlan" type="checkbox" /> 计划</label>
-            <label class="check"><input id="optSkills" type="checkbox" /> 技能</label>
-            <label class="check"><input id="optCompact" type="checkbox" /> 压缩</label>
-            <label class="check"><input id="optTasks" type="checkbox" /> 任务图</label>
+            <label class="check"><input id="optFiles" type="checkbox" checked /> 文件工具</label>
+            <label class="check"><input id="optPlan" type="checkbox" checked /> 计划</label>
+            <label class="check"><input id="optSkills" type="checkbox" checked /> 技能</label>
+            <label class="check"><input id="optCompact" type="checkbox" checked /> 压缩</label>
+            <label class="check"><input id="optTasks" type="checkbox" checked /> 任务图</label>
           </div>
           <div class="input-row">
             <label for="task" class="sr-only">任务内容</label>
-            <textarea id="task" rows="2" placeholder="描述任务，Ctrl+Enter 发送"></textarea>
+            <textarea id="task" rows="2" placeholder="输入任务描述，Ctrl+Enter 发送"></textarea>
             <button id="submit">发送</button>
           </div>
           <div class="composer-foot">
             <span id="status" class="muted" role="status" aria-live="polite"></span>
-            <button id="cancel" class="link" hidden>停止</button>
-            <button id="resume" class="link" hidden>继续跑</button>
+            <button id="cancel" class="link" hidden>停止执行</button>
+            <button id="resume" class="link" hidden>继续执行</button>
           </div>
         </section>
       </main>
@@ -99,14 +104,14 @@
 
         <div class="inspector-body">
           <details class="inspector-section" id="thinkSection" open>
-            <summary>思考 <span id="thinkMeta" class="muted">还没有工具调用</span></summary>
+            <summary>工具调用 <span id="thinkMeta" class="muted">暂无工具调用</span></summary>
             <ul id="thinkList" class="tool-list"></ul>
           </details>
 
           <details class="inspector-section" id="boardSection">
             <summary>任务看板 <span id="boardMeta" class="muted"></span></summary>
             <div id="boardBody" class="board-body">
-              <p class="muted">这一轮没有启用任务图</p>
+              <p class="muted">本轮未启用任务图</p>
             </div>
           </details>
 

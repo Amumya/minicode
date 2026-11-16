@@ -8,6 +8,7 @@
 import "./styles.css";
 import {
   api,
+  setAccessToken,
   subscribeRun,
   type Conversation,
   type RunRow,
@@ -97,6 +98,7 @@ const sidebar = {
   refresh: el<HTMLButtonElement>("refreshWs"),
   newChat: el<HTMLButtonElement>("newChat"),
   conversations: el<HTMLElement>("conversations"),
+  token: el<HTMLInputElement>("token"),
   store: el<HTMLElement>("storeInfo"),
 };
 
@@ -201,12 +203,14 @@ function renderWorkspaces(): void {
 function renderConversations(): void {
   sidebar.conversations.replaceChildren();
   if (conversations.length === 0) {
-    sidebar.conversations.append(h("p", { class: "muted hint" }, "还没有会话"));
+    sidebar.conversations.append(h("p", { class: "muted hint" }, "暂无会话"));
     return;
   }
   for (const group of groupByDay(conversations)) {
     sidebar.conversations.append(h("div", { class: "group-label" }, group.label));
     for (const conv of group.items) {
+      // 多包一层：会话按钮和删除按钮是兄弟节点（button 里不能再嵌 button）
+      const row = h("div", { class: "conv-row" });
       const item = h("button", { class: "conv", dataset: { root: conv.root_id } });
       if (conv.root_id === conversationRoot) {
         item.classList.add("active");
@@ -220,7 +224,15 @@ function renderConversations(): void {
       item.append(dot, title, meta);
       item.title = conv.title;
       item.addEventListener("click", () => void openConversation(conv.root_id));
-      sidebar.conversations.append(item);
+
+      const remove = h("button", { class: "conv-del", title: "删除这个会话" }, "×");
+      remove.setAttribute("aria-label", `删除会话：${conv.title}`);
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void deleteConversation(conv);
+      });
+      row.append(item, remove);
+      sidebar.conversations.append(row);
     }
   }
 }
@@ -266,7 +278,7 @@ function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
       const li = h("li", { class: `plan-item status-${item.status}` });
       li.textContent = item.content;
       if (item.blockedBy?.length) {
-        li.append(h("span", { class: "blocked-by" }, `等 ${item.blockedBy.join(",")}`));
+        li.append(h("span", { class: "blocked-by" }, `等待 ${item.blockedBy.join(",")}`));
       }
       ol.append(li);
     }
@@ -306,11 +318,11 @@ function renderTurn(
     answerNode.append(renderMarkdown(turn.answer));
     bubble.append(answerNode);
   } else if (!turn.ok && turn.status === "error") {
-    bubble.append(h("div", { class: "answer error" }, "运行出错（详情看右侧面板）"));
+    bubble.append(h("div", { class: "answer error" }, "执行失败（详情见右侧面板）"));
   } else if (!turn.ok && turn.status === "done") {
     const text = turn.stopReason === "cancelled"
       ? "已取消"
-      : "没跑完（步数用尽或中断）";
+      : "未完成（步数用尽或已中断）";
     bubble.append(h("div", { class: "answer muted" }, text));
   }
 
@@ -347,11 +359,11 @@ function renderBoardInto(
   body.replaceChildren();
   panel.boardMeta.textContent = "";
   if (!data) {
-    body.append(h("p", { class: "muted" }, "任务看板拉取失败"));
+    body.append(h("p", { class: "muted" }, "任务看板加载失败"));
     return;
   }
   if (!data.enabled || data.tasks.length === 0) {
-    body.append(h("p", { class: "muted" }, "这一轮没有启用任务图"));
+    body.append(h("p", { class: "muted" }, "本轮未启用任务图"));
     return;
   }
   const board = buildTaskBoard(data.tasks);
@@ -404,27 +416,27 @@ function panelTools(turn: Turn): ToolCallView[] {
 /** 把右栏刷新成"某一轮"的详情。run 结束、切会话、新会话都会调它。 */
 function renderInspector(turn: Turn | null, events: AgentEvent[]): void {
   if (!turn) {
-    panel.thinkList.replaceChildren(h("li", { class: "muted" }, "还没有工具调用"));
+    panel.thinkList.replaceChildren(h("li", { class: "muted" }, "暂无工具调用"));
     panel.thinkMeta.textContent = "";
     panel.rawList.replaceChildren();
     panel.rawMeta.textContent = "";
     renderBoardInto(null);
-    panel.boardBody.replaceChildren(h("p", { class: "muted" }, "这一轮没有启用任务图"));
+    panel.boardBody.replaceChildren(h("p", { class: "muted" }, "本轮未启用任务图"));
     return;
   }
 
   const tools = panelTools(turn);
   panel.thinkList.replaceChildren();
   if (tools.length === 0) {
-    panel.thinkList.append(h("li", { class: "muted" }, "这一轮没有工具调用"));
+    panel.thinkList.append(h("li", { class: "muted" }, "本轮无工具调用"));
   } else {
     for (const tool of tools) panel.thinkList.append(toolRow(tool));
   }
   const failed = tools.filter((t) => !t.ok).length;
   panel.thinkMeta.textContent =
-    `工具 ${tools.length} 次` +
+    `共 ${tools.length} 次` +
     (failed ? ` · 失败 ${failed}` : "") +
-    (turn.denied ? ` · 被拒 ${turn.denied}` : "");
+    (turn.denied ? ` · 已拒绝 ${turn.denied}` : "");
 
   const merged = mergeDeltaEvents(events);
   panel.rawList.replaceChildren();
@@ -497,7 +509,7 @@ function renderLiveAnswer(view: LiveView): void {
 
 function updateThinkMeta(view: LiveView): void {
   panel.thinkMeta.textContent =
-    `工具 ${view.toolCount} 次` + (view.denied ? ` · 被拒 ${view.denied}` : "");
+    `共 ${view.toolCount} 次` + (view.denied ? ` · 已拒绝 ${view.denied}` : "");
 }
 
 function appendRawRow(view: LiveView, ev: AgentEvent): void {
@@ -527,7 +539,7 @@ function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
     const li = h("li", { class: `plan-item status-${item.status}` });
     li.textContent = item.content;
     if (item.blockedBy?.length) {
-      li.append(h("span", { class: "blocked-by" }, `等 ${item.blockedBy.join(",")}`));
+      li.append(h("span", { class: "blocked-by" }, `等待 ${item.blockedBy.join(",")}`));
     }
     list.append(li);
   }
@@ -543,7 +555,7 @@ function applyLiveEvent(ev: AgentEvent, silent = false): void {
     renderLiveAnswer(view);
     if (!view.deltaRow) {
       view.deltaRow = h("div", { class: "event tone-info" });
-      view.deltaRow.append(h("span", { class: "event-label" }, "思考"));
+      view.deltaRow.append(h("span", { class: "event-label" }, "模型输出"));
       view.deltaDetail = h("span", { class: "event-detail" }, view.deltaText.slice(0, 60));
       view.deltaRow.append(view.deltaDetail);
       panel.rawList.append(view.deltaRow);
@@ -554,7 +566,7 @@ function applyLiveEvent(ev: AgentEvent, silent = false): void {
     }
   } else if (ev.kind === "tool_call") {
     view.toolCount += 1;
-    // 第一次有工具调用时把"还没有工具调用"的提示去掉
+    // 第一次有工具调用时把"暂无工具调用"的提示去掉
     if (view.toolCount === 1) panel.thinkList.replaceChildren();
     panel.thinkList.append(toolRow(describeToolCall(ev)));
     updateThinkMeta(view);
@@ -577,7 +589,7 @@ function applyLiveEvent(ev: AgentEvent, silent = false): void {
 
 /** 从历史/刷新恢复：把已有事件灌进右栏（不滚屏、不改顶栏）。 */
 function replayIntoLiveView(events: AgentEvent[], plan: PlanItem[] | null = null): void {
-  panel.thinkList.replaceChildren(h("li", { class: "muted" }, "还没有工具调用"));
+  panel.thinkList.replaceChildren(h("li", { class: "muted" }, "暂无工具调用"));
   panel.rawList.replaceChildren();
   for (const ev of events) applyLiveEvent(ev, true);
   if (plan) renderLivePlan(liveView as LiveView, plan);
@@ -638,12 +650,12 @@ function renderChat(): void {
 
   const busy = isBusy();
   main.submit.disabled = busy;
-  main.submit.textContent = busy ? "运行中…" : (runs.length > 0 ? "接着说" : "发送");
+  main.submit.textContent = busy ? "执行中…" : (runs.length > 0 ? "继续对话" : "发送");
   main.resume.hidden = !latestRunResumable();
   main.cancel.hidden = !busy;
   // 徽章必须跟着 busy 一起复位，否则跑完之后还挂着"运行中…"
   main.status.hidden = !busy;
-  if (busy) main.status.textContent = "运行中…";
+  if (busy) main.status.textContent = "执行中…";
 
   scrollToBottom();
 }
@@ -687,7 +699,7 @@ async function loadWorkspaces(): Promise<void> {
     workspaces = data.workspaces;
     renderWorkspaces();
   } catch {
-    sidebar.workspace.replaceChildren(h("option", {}, "（工作区列表拉取失败）"));
+    sidebar.workspace.replaceChildren(h("option", {}, "（工作区列表加载失败）"));
   }
 }
 
@@ -697,7 +709,7 @@ async function loadConversations(): Promise<void> {
     conversations = data.conversations;
     renderConversations();
   } catch {
-    sidebar.conversations.replaceChildren(h("p", { class: "muted hint" }, "拉取历史失败"));
+    sidebar.conversations.replaceChildren(h("p", { class: "muted hint" }, "会话列表加载失败"));
   }
 }
 
@@ -729,7 +741,7 @@ async function openConversation(rootId: string, opts: { silent?: boolean } = {})
     return;
   }
 
-  if (!opts.silent) setStatus("加载会话…");
+  if (!opts.silent) setStatus("正在加载会话…");
   // 并发拉：串行 await 在长会话里很慢，而且慢的那个晚到会覆盖后点的那个
   const settled = await Promise.all(
     conv.run_ids.map((runId) => api.runWithEvents(runId).catch(() => null)),
@@ -778,12 +790,12 @@ function attachStream(run: RunRow): void {
         current.error = typeof data.error === "string" ? data.error : null;
         current.events = liveEvents;
       }
-      setStatus(current?.status === "error" ? "出错了" : "完成", current?.status === "error" ? "error" : "ok");
+      setStatus(current?.status === "error" ? "执行失败" : "已完成", current?.status === "error" ? "error" : "ok");
       render();
       void loadConversations();
       void loadWorkspaces();
     },
-    () => setStatus("事件流断了", "error"),
+    () => setStatus("事件流连接中断", "error"),
   );
 }
 
@@ -811,12 +823,12 @@ let submitting = false;
 async function submit(): Promise<void> {
   // 运行中再提交会新开一个 run 并把事件流抢过来，旧 run 还在后台烧钱
   if (submitting || isBusy()) {
-    setStatus("上一轮还在跑，等它结束", "error");
+    setStatus("上一轮仍在执行，请稍候", "error");
     return;
   }
   const task = main.task.value.trim();
   if (!task) {
-    setStatus("先写个任务", "error");
+    setStatus("请输入任务内容", "error");
     return;
   }
   const workspace = selectedWorkspace();
@@ -827,7 +839,7 @@ async function submit(): Promise<void> {
 
   submitting = true;
   main.submit.disabled = true;
-  setStatus(canFollow ? "接着上一轮…" : "提交中…");
+  setStatus(canFollow ? "正在继续上一轮…" : "提交中…");
 
   try {
     let runId: string;
@@ -883,16 +895,45 @@ function canContinue(run: RunRow): boolean {
   return run.status === "done" || run.status === "error";
 }
 
+/** 删除一个会话（连同它的全部 run）。删之前问一次，避免点错。 */
+async function deleteConversation(conv: Conversation): Promise<void> {
+  const label = shortTitle(conv.title, 24);
+  const turns = conv.turns && conv.turns > 1 ? `（共 ${conv.turns} 轮）` : "";
+  if (!window.confirm(`确定删除会话「${label}」${turns}？删除后不可恢复。`)) return;
+
+  try {
+    await api.deleteConversation(conv.root_id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    setStatus(`删除失败：${message}`, "error");
+    return;
+  }
+
+  setStatus("已删除会话");
+  // 删的正是当前打开的那个，就回到空状态；否则只刷新左栏
+  if (conversationRoot === conv.root_id) {
+    closeStream?.();
+    closeStream = null;
+    conversationRoot = "";
+    runs = [];
+    liveRun = null;
+    liveEvents = [];
+    setHash("");
+    render();
+  }
+  await loadConversations();
+}
+
 async function cancelRun(): Promise<void> {
   const running = [...runs].reverse().find(
     (r) => r.status === "running" || r.status === "queued",
   );
   if (!running) {
-    setStatus("没有正在跑的 run", "error");
+    setStatus("当前没有执行中的任务", "error");
     return;
   }
   main.cancel.disabled = true;
-  setStatus("正在停止…（等当前这步结束）");
+  setStatus("正在停止…（等待当前步骤结束）");
   try {
     await api.cancel(running.id);
   } catch (err) {
@@ -906,7 +947,7 @@ async function cancelRun(): Promise<void> {
 async function resumeRun(): Promise<void> {
   const last = runs[runs.length - 1];
   if (!last) return;
-  setStatus("从检查点继续…");
+  setStatus("正在从检查点恢复…");
   try {
     await api.resume(last.id, Math.max(Number(main.maxSteps.value) || 8, 8));
     const refreshed = await api.run(last.id);
@@ -921,12 +962,26 @@ async function resumeRun(): Promise<void> {
 
 /* ------------------------------------------------------------------ 初始化 */
 
+const TOKEN_KEY = "minicode:token";
+
+function applyToken(value: string): void {
+  setAccessToken(value);
+  remember(TOKEN_KEY, value);
+}
+
 async function init(): Promise<void> {
+  // 先把令牌接上，后面所有请求才会带 Authorization
+  const savedToken = recall(TOKEN_KEY);
+  if (savedToken) {
+    sidebar.token.value = savedToken;
+    setAccessToken(savedToken);
+  }
+
   try {
     const health = await api.health();
     sidebar.store.textContent = `${health.store ?? "?"} · ${health.runs ?? 0} 个 run`;
   } catch {
-    sidebar.store.textContent = "后端连不上";
+    sidebar.store.textContent = "后端连接失败";
   }
 
   await loadWorkspaces();
@@ -949,6 +1004,13 @@ main.submit.addEventListener("click", () => void submit());
 main.task.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void submit();
 });
+sidebar.token.addEventListener("change", () => {
+  applyToken(sidebar.token.value);
+  setStatus(sidebar.token.value ? "令牌已保存" : "已清除令牌");
+  // 令牌变了，历史会话要用新令牌重新拉
+  void loadConversations();
+});
+
 main.cancel.addEventListener("click", () => void cancelRun());
 main.resume.addEventListener("click", () => void resumeRun());
 sidebar.newChat.addEventListener("click", () => newChat());

@@ -29,7 +29,7 @@ class Settings:
     api_key: str
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
-    max_steps: int = 8
+    max_steps: int = 20
 
     @classmethod
     def from_env(cls, env_file: Path | None = None) -> "Settings":
@@ -39,7 +39,7 @@ class Settings:
             api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
             base_url=os.environ.get("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL),
             model=os.environ.get("DEEPSEEK_MODEL", DEFAULT_MODEL),
-            max_steps=int(os.environ.get("MAX_STEPS", "8")),
+            max_steps=int(os.environ.get("MAX_STEPS", "20")),
         )
 
     def require_key(self) -> str:

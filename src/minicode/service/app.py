@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -59,6 +59,30 @@ ProviderFactory = Callable[[Settings], object]
 # 前端构建产物放在包旁边（web/vite.config.ts 里配的输出目录），
 # 这样不管是从源码跑还是装成包跑，路径都对得上。
 WEB_DIR = Path(__file__).resolve().parent / "web"
+
+
+def group_conversations(runs: list["RunState"]) -> dict[str, list["RunState"]]:
+    """把 run 按 parent_id 串成会话，返回 {根 run id: 成员}。
+
+    「沿着 parent_id 往上找根」这段逻辑 /conversations 和 DELETE /conversations 都要用，
+    所以提出来放模块级。
+    """
+    by_id = {r.id: r for r in runs}
+    groups: dict[str, list[RunState]] = {}
+
+    def root_of(run: RunState) -> str:
+        current = run
+        seen = {current.id}
+        while current.parent_id and current.parent_id in by_id:
+            if current.parent_id in seen:
+                break
+            current = by_id[current.parent_id]
+            seen.add(current.id)
+        return current.id
+
+    for run in runs:
+        groups.setdefault(root_of(run), []).append(run)
+    return groups
 
 
 def is_usable_workspace(path: str) -> bool:
@@ -114,6 +138,7 @@ def create_app(
     settings: Settings | None = None,
     store: SessionStore | None = None,
     default_workspace: Path | None = None,
+    token: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="minicode", version=__version__)
     st = store or default_store()
@@ -121,6 +146,34 @@ def create_app(
     # 所以默认工作区允许从环境变量来。
     env_workspace = os.environ.get("MINICODE_WORKSPACE", "").strip()
     base_workspace = Path(default_workspace or env_workspace or Path.cwd()).resolve()
+
+    # ---- 访问令牌 ----
+    # 设了 MINICODE_TOKEN（或显式传 token）才启用；空 = 不鉴权（默认，配合只监听 127.0.0.1）。
+    # 浏览器里 EventSource 不能自定义请求头，所以除了 Authorization 还接受 ?token=。
+    expected_token = (token if token is not None else os.environ.get("MINICODE_TOKEN", "")).strip()
+    if expected_token:
+        import hmac
+
+        # 这几个不鉴权：页面骨架、静态资源、健康检查（否则浏览器连页面都打不开）
+        def _public_path(path: str) -> bool:
+            return path in ("/", "/healthz") or path.startswith("/assets/") or path == "/favicon.ico"
+
+        def _presented_token(request: Request) -> str:
+            header = request.headers.get("authorization", "")
+            if header.lower().startswith("bearer "):
+                return header[7:].strip()
+            return request.query_params.get("token", "")
+
+        @app.middleware("http")
+        async def _require_token(request: Request, call_next):
+            if _public_path(request.url.path):
+                return await call_next(request)
+            if not hmac.compare_digest(_presented_token(request), expected_token):
+                return JSONResponse(
+                    {"detail": "需要访问令牌（Authorization: Bearer <token>，或给 SSE 加 ?token=）"},
+                    status_code=401,
+                )
+            return await call_next(request)
 
     # 每个 run 一个 asyncio.Event，用来叫醒 SSE 生成器。
     # 放 dict 里是为了让 store 保持纯数据、不掺和异步。
@@ -301,6 +354,25 @@ def create_app(
             })
         return {"workspaces": items, "default": default}
 
+    @app.delete("/conversations/{root_id}")
+    def delete_conversation(root_id: str) -> dict:
+        """删掉一个会话（连同它的全部 run、事件、检查点）。
+
+        会话在存储里就是一条 parent_id 链，所以"删会话"= 找到链上所有 run 逐个删。
+        """
+        groups = group_conversations(st.all())
+        members = groups.get(root_id)
+        if not members:
+            raise HTTPException(404, "没有这个会话")
+        busy = [r.id for r in members if r.status in ("running", "queued") and r.id in active_runs]
+        if busy:
+            raise HTTPException(409, "会话里有正在执行的任务，请先停止")
+        deleted = [r.id for r in members if st.delete(r.id)]
+        for run_id in deleted:
+            changed.pop(run_id, None)
+            cancel_flags.pop(run_id, None)
+        return {"root_id": root_id, "deleted": len(deleted), "run_ids": deleted}
+
     @app.get("/conversations")
     def list_conversations(limit: int = 60) -> dict:
         """把 run 按 parent_id 串成"会话"，按最近活动排序。
@@ -308,22 +380,7 @@ def create_app(
         为什么不在前端算：这个「沿着 parent_id 往上找根」的逻辑如果在界面里写，
         数据一多每次渲染都要重复算；放后端一次算完，前端只负责画。
         """
-        runs = st.all()
-        by_id = {r.id: r for r in runs}
-
-        def root_of(run: RunState) -> str:
-            current = run
-            seen = {current.id}
-            while current.parent_id and current.parent_id in by_id:
-                if current.parent_id in seen:
-                    break
-                current = by_id[current.parent_id]
-                seen.add(current.id)
-            return current.id
-
-        groups: dict[str, list[RunState]] = {}
-        for run in runs:
-            groups.setdefault(root_of(run), []).append(run)
+        groups = group_conversations(st.all())
 
         out = []
         for root_id, members in groups.items():

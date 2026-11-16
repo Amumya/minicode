@@ -51,6 +51,7 @@ const { window } = dom;
 
 const calls = [];
 const bodies = new Map();
+const requests = [];      // 每条带上 method/url/headers，用来验令牌
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 const HISTORY_RUN = {
@@ -70,6 +71,7 @@ const HISTORY_RUN = {
 window.fetch = async (url, opts = {}) => {
   const method = opts.method ?? "GET";
   calls.push(`${method} ${url}`);
+  requests.push({ method, url, headers: { ...(opts.headers ?? {}) } });
   if (opts.body) bodies.set(`${method} ${url}`, JSON.parse(opts.body));
   const reply = (obj) => ({
     ok: true,
@@ -133,6 +135,7 @@ class StubEventSource {
   }
 }
 window.EventSource = StubEventSource;
+window.confirm = () => true;   // jsdom 没实现 confirm，删除会用到
 
 try {
   window.eval(bundle);
@@ -154,9 +157,38 @@ check("工作区默认选中默认目录", doc.querySelector("#workspace").value
 check("左栏渲染了历史会话", doc.querySelectorAll("#conversations .conv").length === 1);
 check("底部显示存储信息", doc.querySelector("#storeInfo").textContent.includes("StubStore"));
 
+// 令牌：填了会进 Authorization 头；清掉就没了
+const tokenInput = doc.querySelector("#token");
+check("有令牌输入框", !!tokenInput);
+tokenInput.value = "s3cret";
+tokenInput.dispatchEvent(new window.Event("change"));
+await sleep(150);
+const lastConvReq = requests.filter((r) => r.url.startsWith("/conversations")).at(-1);
+check("令牌进 Authorization 头",
+  lastConvReq?.headers?.Authorization === "Bearer s3cret",
+  JSON.stringify(lastConvReq?.headers ?? {}));
+tokenInput.value = "";
+tokenInput.dispatchEvent(new window.Event("change"));
+await sleep(150);
+const afterClear = requests.filter((r) => r.url.startsWith("/conversations")).at(-1);
+check("清空令牌后不再带 Authorization",
+  afterClear && !("Authorization" in afterClear.headers),
+  JSON.stringify(afterClear?.headers ?? {}));
+
+// 左栏：会话行带删除按钮
+check("每个会话行都有删除按钮", doc.querySelectorAll("#conversations .conv-del").length === 1,
+  `${doc.querySelectorAll("#conversations .conv-del").length} 个`);
+
+// 默认值：五个开关全选、步数 20（实测 8 步不够跑多步任务）
+const defaultSwitches = ["#optFiles", "#optPlan", "#optSkills", "#optCompact", "#optTasks"];
+check("五个开关默认全选", defaultSwitches.every((sel) => doc.querySelector(sel).checked),
+  defaultSwitches.map((sel) => `${sel}=${doc.querySelector(sel).checked}`).join(" "));
+check("默认步数是 20", doc.querySelector("#maxSteps").value === "20",
+  doc.querySelector("#maxSteps").value);
+
 // ---------------------------------------------------------------- 右栏存在
 check("右侧详情面板存在", !!doc.querySelector("#inspector"));
-check("右栏有三个分区（思考/任务看板/原始事件）",
+check("右栏有三个分区（工具调用/任务看板/原始事件）",
   !!doc.querySelector("#thinkSection") && !!doc.querySelector("#boardSection") && !!doc.querySelector("#rawSection"));
 
 // ---------------------------------------------------------------- 打开历史会话
@@ -182,8 +214,11 @@ doc.querySelector("#submit").click();
 await sleep(120);
 const es = sources.at(-1);
 check("提交后订阅了事件流", es?.url === "/runs/run-new/events", es?.url ?? "(无)");
+const sentBody = bodies.get("POST /runs") ?? {};
 check("提交 body 带上了任务和开关",
-  bodies.get("POST /runs")?.task === "列出 tests 目录" && bodies.get("POST /runs")?.plan === true);
+  sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
+  sentBody.include_files === true && sentBody.tasks === true);
+check("提交时带上默认步数 20", sentBody.max_steps === 20, String(sentBody.max_steps));
 
 const before = calls.filter((c) => c === "POST /runs").length;
 doc.querySelector("#task").value = "再开一个";
@@ -215,7 +250,7 @@ check("工具调用出现在右栏（不在气泡里）",
   `面板 ${doc.querySelectorAll("#thinkList .tool").length} 行`);
 check("右栏显示完整命令", doc.querySelector("#thinkList .tool-command")?.textContent?.includes("Get-ChildItem tests"));
 check("右栏显示命令输出预览", doc.querySelector("#thinkList .tool-output")?.textContent?.includes("test_b.py"));
-check("右栏思考计数更新", doc.querySelector("#thinkMeta").textContent.includes("工具 1 次"),
+check("右栏工具调用计数更新", doc.querySelector("#thinkMeta").textContent.includes("共 1 次"),
   doc.querySelector("#thinkMeta").textContent);
 check("顶栏花费在累加", doc.querySelector("#usage").textContent.includes("入 120"));
 
@@ -285,7 +320,7 @@ check("气泡里没有工具调用（都在右栏）", !doc.querySelector("#chat
 check("结束后右栏任务看板渲染出卡片",
   doc.querySelectorAll("#boardBody .task-card").length === 2,
   `${doc.querySelectorAll("#boardBody .task-card").length} 张`);
-check("结束后按钮变成「接着说」", doc.querySelector("#submit").textContent === "接着说");
+check("结束后按钮变成「继续对话」", doc.querySelector("#submit").textContent === "继续对话");
 check("结束后状态徽章复位", doc.querySelector("#runStatus").hidden === true);
 
 // ---------------------------------------------------------------- 右栏收起/展开
@@ -298,12 +333,18 @@ await sleep(50);
 check("再点一次能展开右栏",
   !doc.querySelector("#appRoot").classList.contains("inspector-hidden"));
 
-// ---------------------------------------------------------------- 接着说 + 出错
+// ---------------------------------------------------------------- 继续对话 + 出错
+// 先设令牌：验证 SSE（EventSource 不能带头，只能走 ?token=）
+doc.querySelector("#token").value = "s3cret";
+doc.querySelector("#token").dispatchEvent(new window.Event("change"));
+await sleep(120);
 doc.querySelector("#task").value = "再数一下 src";
 doc.querySelector("#submit").click();
 await sleep(150);
-check("接着说走 followup", calls.includes("POST /runs/run-new/followup"));
-check("接着说订阅新的 run", sources.at(-1)?.url === "/runs/run-followup/events");
+check("继续对话走 followup", calls.includes("POST /runs/run-new/followup"));
+check("继续对话订阅新的 run（SSE 带令牌）",
+  sources.at(-1)?.url === "/runs/run-followup/events?token=s3cret",
+  sources.at(-1)?.url ?? "(无)");
 
 const es2 = sources.at(-1);
 es2.emit("end", { kind: "end", ts, data: { status: "error", error: "模型端点挂了" } });
@@ -311,6 +352,13 @@ await sleep(200);
 check("出错时显示错误文案",
   doc.querySelector("#chat .answer.error")?.textContent.includes("模型端点挂了"));
 check("出错后出现「继续跑」", doc.querySelector("#resume").hidden === false);
+
+// ---- 删除会话 ----
+doc.querySelector("#conversations .conv-del").click();
+await sleep(200);
+check("点删除会调删除会话接口",
+  calls.some((c) => c === "DELETE /conversations/run-a"), calls.slice(-3).join(" | "));
+check("删除后有状态提示", doc.querySelector("#status").textContent.includes("已删除"));
 
 // ---- 取消后的展示 ----
 const es3 = sources.at(-1);

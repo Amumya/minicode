@@ -41,8 +41,9 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 **界面 / 服务**
 
 - 命令行：`minicode run "任务"` / `minicode serve` / `minicode dev` / `minicode app`
-- HTTP 服务：提交任务返回 id，事件用 SSE 推，`curl` 就能看
-- 三栏界面：左栏工作区 + 历史会话，中间流式对话（Markdown 渲染），右栏详情面板（思考 / 任务看板 / 原始事件，可收起）
+- HTTP 服务：提交任务返回 id，事件用 SSE 推，`curl` 就能看；接口支持删除 run / 删除会话；
+  可选**访问令牌**（`--token` 或 `MINICODE_TOKEN`），令牌走 `Authorization: Bearer` 或 SSE 的 `?token=`
+- 三栏界面：左栏工作区 + 历史会话，中间流式对话（Markdown 渲染），右栏详情面板（工具调用 / 任务看板 / 原始事件，可收起）
 - 会话分组：`GET /conversations` 按父子链把 run 串成会话，左栏按日期分组
 - 深链：`http://127.0.0.1:8765/#/c/<会话 id>` 可以直接打开某个会话
 - 一键开发环境 `minicode dev`（自动起 Redis、可选开窗口、端口冲突有提示）
@@ -54,7 +55,7 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - 任务自洽检查：`eval/verify_tasks.py`，几秒钟验证"起始代码下隐藏测试必须是挂的"
 - CI：Python 3.11 / 3.12 + 前端测试
 
-现状：Python 测试 320 条、前端 66 条、界面链路检查 50 项。
+现状：Python 测试 333 条、前端 67 条、界面链路检查 59 项。
 
 ## 跑出来的数字
 
@@ -137,7 +138,7 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 - [x] 流式输出（按 80ms / 120 字符合并增量事件）
 - [x] 取消正在跑的 run（当前这步结束后立刻停，界面有「停止」按钮）
 - [x] bash 工具流式读取输出（攒够上限就杀进程，超大输出不会打爆内存）
-- [ ] HTTP 接口加本地 token（现在没有鉴权，只能靠只监听 127.0.0.1）
+- [x] HTTP 接口访问令牌（`--token` / `MINICODE_TOKEN`，默认关闭）
 - [ ] 记忆（跨 run 的长期笔记）
 - [ ] MCP 接入
 
@@ -197,11 +198,19 @@ curl.exe -sN http://127.0.0.1:8765/runs/<上一步返回的 id>/events
 事件流长这样（`start` → `model_call` → `tool_call` → `assistant_delta` → `finish` → `end`），
 每条 `data` 都是 JSON；`assistant_delta` 是流式输出的文字增量。
 
-浏览器打开 <http://127.0.0.1:8765/> 就是界面：三栏布局，
+浏览器打开 <http://127.0.0.1:8765/> 就是界面：三栏布局，文件工具 / 计划 / 技能 / 压缩 / 任务图默认全开，步数默认 20（可改，上限 50）；
 左栏选工作区和历史会话，中间写任务/看对话，右栏看工具调用、任务看板和原始事件。
 会话可以直接用链接分享：`/#/c/<会话 id>`。
 
-**没有鉴权，别往公网开。** 默认只监听 `127.0.0.1`。
+默认**没有鉴权**，只监听 `127.0.0.1`。想加一层令牌就启动时带上：
+
+```powershell
+minicode serve --port 8765 --token 换成你的令牌
+```
+
+开了之后：页面和静态资源仍可直接打开，浏览器界面在左栏「令牌」里填同一个值
+（会存 localStorage）；直接用 `curl` 时加 `-H "Authorization: Bearer <令牌>"`，
+SSE 那条流加 `?token=<令牌>`（EventSource 加不了请求头）。`/healthz` 始终免鉴权。
 
 store 里如果混进了测试数据（历史里出现 `x`、`回滚` 这类，点开报"模型不存在"），
 可以用脚本清掉（先 `--dry-run` 看要删什么）：
