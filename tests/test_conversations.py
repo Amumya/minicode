@@ -167,7 +167,7 @@ def test_workspace_filter_drops_temp_dirs():
 
     assert is_usable_workspace("D:\\work\\myproject") is True
     assert is_usable_workspace("C:/Users/me/projects/demo") is True
-    assert is_usable_workspace("D:/repo/pytest-of-33714/pytest-3/test_x0") is False
+    assert is_usable_workspace("D:/repo/pytest-of-12345/pytest-3/test_x0") is False
     assert is_usable_workspace("/tmp/pytest-abc/test_x") is False
     assert is_usable_workspace("C:/Users/me/AppData/Local/Temp/xyz") is False
     assert is_usable_workspace("") is False

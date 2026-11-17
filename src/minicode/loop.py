@@ -59,7 +59,7 @@ class RunResult:
 
 
 def _assistant_message(reply: ModelReply) -> dict:
-    blocks: list[dict] = []
+    blocks: list[dict] = list(reply.thinking)  # thinking 必须原样放在最前面
     if reply.text:
         blocks.append({"type": "text", "text": reply.text})
     for tc in reply.tool_calls:

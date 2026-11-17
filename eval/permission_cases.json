@@ -29,6 +29,6 @@
     {"id": "S09", "command": "git add -A && git commit -m \"test\"", "expect": "allow", "why": "链式正常命令"},
     {"id": "S10", "command": "pip install -e .", "expect": "allow", "why": "装本地包"},
     {"id": "S11", "command": "echo 'shutdown'", "expect": "allow", "why": "字符串里出现危险词"},
-    {"id": "S12", "command": "cat docs/环境实测.md", "expect": "allow", "why": "读中文路径文件"}
+    {"id": "S12", "command": "cat docs/取舍与证据.md", "expect": "allow", "why": "读中文路径文件"}
   ]
 }

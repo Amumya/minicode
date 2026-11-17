@@ -26,6 +26,10 @@ class ModelReply:
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str = ""
     usage: dict = field(default_factory=dict)
+    # 模型返回的 thinking / redacted_thinking 块，原样保存：
+    # 下一轮把 assistant 消息发回去时必须带上（尤其是 signature），
+    # 否则开了 extended thinking 的模型会直接 400。
+    thinking: list[dict] = field(default_factory=list)
 
 
 class Provider(Protocol):
@@ -70,6 +74,7 @@ class AnthropicProvider:
     def _to_reply(self, resp) -> ModelReply:
         text_parts: list[str] = []
         calls: list[ToolCall] = []
+        thinking: list[dict] = []
         for block in getattr(resp, "content", []) or []:
             btype = getattr(block, "type", "")
             if btype == "text":
@@ -82,6 +87,18 @@ class AnthropicProvider:
                         arguments=dict(getattr(block, "input", {}) or {}),
                     )
                 )
+            elif btype == "thinking":
+                thinking.append(
+                    {
+                        "type": "thinking",
+                        "thinking": getattr(block, "thinking", ""),
+                        "signature": getattr(block, "signature", ""),
+                    }
+                )
+            elif btype == "redacted_thinking":
+                thinking.append(
+                    {"type": "redacted_thinking", "data": getattr(block, "data", "")}
+                )
 
         usage = getattr(resp, "usage", None)
         return ModelReply(
@@ -92,4 +109,5 @@ class AnthropicProvider:
                 "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
                 "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
             },
+            thinking=thinking,
         )

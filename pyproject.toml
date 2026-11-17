@@ -25,6 +25,10 @@ serve = [
     "uvicorn>=0.27",
     "redis>=5",
 ]
+# 桌面窗口（可选）：PySide6 + QWebEngineView，约 350MB；只跑命令行不需要
+desktop = [
+    "PySide6>=6.5",
+]
 # 跑 CI 要装齐，httpx 是 FastAPI 测试客户端的依赖
 dev = [
     "pytest>=8.0",

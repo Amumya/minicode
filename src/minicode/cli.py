@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -72,8 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--dry-run", action="store_true", help="只打印会启动什么，不真起")
     a.add_argument("--no-wait", action="store_true",
                    help="不等窗口关闭（服务在后台继续跑）")
-    a.add_argument("--mode", choices=("auto", "app", "window"), default="auto",
-                   help="窗口模式：auto=先试 app，渲染不出来就降级到普通窗口")
+    a.add_argument("--mode", choices=("auto", "gui", "app", "window"), default="auto",
+                   help="窗口模式：auto=先试桌面窗口/浏览器窗口，渲染不出来就降级")
 
     d = sub.add_parser("dev", help="一键起开发环境（Redis + 服务，可选开窗口）")
     d.add_argument("--host", default="127.0.0.1")
@@ -81,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--workspace", type=Path, default=None)
     d.add_argument("--open", action="store_true", help="顺便打开窗口")
     d.add_argument("--token", default=None, help="访问令牌（设了之后接口要求鉴权）")
-    d.add_argument("--mode", choices=("auto", "app", "window"), default="auto")
+    d.add_argument("--mode", choices=("auto", "gui", "app", "window"), default="auto")
     d.add_argument("--build", action="store_true", help="启动前重新构建前端")
     d.add_argument("--reload", action="store_true", help="改 Python 代码自动重载")
     d.add_argument("--no-redis", action="store_true",

@@ -1,26 +1,26 @@
-"""桌面壳：起本地服务，再用浏览器开一个窗口。
+"""桌面壳：起本地服务，再开一个窗口。
 
-为什么这么做而不是 Electron/pywebview：
+两种窗口，按可用性降级：
 
-    Electron 要下载约 100MB，这台机器的代理不稳；
-    Tauri 要 Rust（没装）；pywebview 要 pythonnet，多一层原生依赖。
-    而本机 Edge 和 WebView2 都装好了，零新依赖。
+    1. **PySide6 原生窗口**（可选依赖 `.[desktop]`）：QMainWindow + QWebEngineView。
+       直接依赖 Python 轮子，不碰 pythonnet/.NET。QtWebEngine 的 Chromium 沙箱
+       在部分环境里起不来，启动前默认补 `--no-sandbox`（窗口只加载 127.0.0.1
+       上的自家页面）；用户已设置 `QTWEBENGINE_CHROMIUM_FLAGS` 时不覆盖。
+       页面 10 秒没加载出来就关窗并降级。
 
-**踩过的坑（2026-11-15）**：`msedge --app=URL --user-data-dir=<新目录>` 在这台机器上
-会开出一个**空白窗口**，标题栏显示 `127.0.0.1_/`，页面根本没渲染 ——
-即使服务端确认返回了 200（用 CDP 查过：target 的 url 是对的，title 是空的）。
-同一组参数换成 `--new-window` 就正常。所以现在：
+    2. **浏览器 `--app` 窗口**：没装 PySide6 或 GUI 起不来时的兜底，零依赖。
+       踩过的坑（2026-11-15）：`msedge --app=URL --user-data-dir=<新目录>` 在这台机器上
+       会开出空白窗口（标题 `127.0.0.1_/`），所以要先等窗口标题确认页面真的加载了，
+       没加载就收掉进程退回 `--new-window`。
 
-    1. 先按 `--app` 开（这才是"独立窗口"的样子）
-    2. 等几秒，枚举窗口标题看页面**是不是真的加载了**
-    3. 没加载就把进程收掉，退回 `--new-window`（带地址栏的普通窗口）
-
-宁可要一个能用的普通窗口，也不要一个漂亮的空白窗口。
+窗口关掉之后，本地服务（以及 dev 起的 Redis）一起收掉。
 """
 
 from __future__ import annotations
 
 import ctypes
+import importlib.util
+import os
 import subprocess
 import sys
 import threading
@@ -42,6 +42,86 @@ EXPECTED_TITLE = "minicode"
 
 # 浏览器"没加载成功"时出现的标题特征
 _BAD_TITLE_MARKERS = ("新建标签页", "New tab", "无标题", "Untitled")
+
+# 桌面窗口标题（和 index.html 的 <title> 一致）
+QT_WINDOW_TITLE = "minicode"
+
+
+def qt_window_available() -> bool:
+    """装了 PySide6 才开桌面窗口；MINICODE_GUI=0 可以强制关掉。"""
+    if os.environ.get("MINICODE_GUI", "").strip().lower() in ("0", "off", "false"):
+        return False
+    return importlib.util.find_spec("PySide6") is not None
+
+
+def _ensure_qt_flags() -> None:
+    """给 QtWebEngine 补 Chromium 兼容参数。
+
+    Chromium 的 GPU/沙箱进程在部分环境（远程会话、受限 Job）里起不来，窗口会白屏。
+    窗口只加载 127.0.0.1 上的自家页面，所以默认补 --no-sandbox；
+    用户/系统已经设置过 flags 时不覆盖。
+    """
+    flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
+    if "--no-sandbox" not in flags:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --no-sandbox".strip()
+
+
+def run_qt_window(
+    url: str,
+    *,
+    workspace: Path | None = None,
+    width: int = 1440,
+    height: int = 900,
+) -> int:
+    """用 PySide6 的 QWebEngineView 开原生窗口，阻塞到窗口关闭。
+
+    页面 10 秒内没加载出来就把窗口关掉并抛异常，由调用方降级到浏览器窗口。
+    """
+    _ensure_qt_flags()
+
+    from PySide6.QtCore import QTimer, QUrl
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWidgets import QApplication, QMainWindow
+
+    profile_dir = (Path(workspace) if workspace else Path.cwd()) / ".minicode" / "qt-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    app = QApplication.instance() or QApplication([sys.argv[0]])
+    window = QMainWindow()
+    window.setWindowTitle(QT_WINDOW_TITLE)
+    window.resize(width, height)
+    window.setMinimumSize(980, 620)
+
+    view = QWebEngineView()
+    profile = QWebEngineProfile("minicode", app)
+    profile.setPersistentStoragePath(str(profile_dir / "storage"))
+    profile.setCachePath(str(profile_dir / "cache"))
+    page = QWebEnginePage(profile, view)
+    view.setPage(page)
+    window.setCentralWidget(view)
+
+    state = {"loaded": False, "failed": False}
+
+    def _on_loaded(ok: bool) -> None:
+        state["loaded"] = bool(ok)
+
+    def _check_loaded() -> None:
+        if not state["loaded"]:
+            state["failed"] = True
+            window.close()
+
+    view.loadFinished.connect(_on_loaded)
+    view.load(QUrl(url))
+    window.show()
+
+    # 页面 10 秒还没加载出来就当失败：关窗让 exec() 返回，调用方降级
+    QTimer.singleShot(10_000, _check_loaded)
+    app.exec()
+
+    if state["failed"]:
+        raise RuntimeError("页面 10 秒内没有加载完成")
+    return 0
 
 
 def _port_in_use(host: str, port: int, timeout: float = 0.3) -> bool:
@@ -264,9 +344,11 @@ def run_app(
     url = f"http://{host}:{port}"
     profile = (Path(workspace) if workspace else Path.cwd()) / ".minicode" / "edge-profile"
     found = find_browser(browser)
+    has_gui = qt_window_available()
 
     if dry_run:
         print(f"  服务地址: {url}")
+        print(f"  桌面窗口: {'PySide6（可用）' if has_gui else '(没装 PySide6，用浏览器窗口)'}")
         print(f"  浏览器  : {found or '(没找到，会退化成只打印地址)'}")
         print(f"  窗口模式: {mode}")
         if found:
@@ -298,6 +380,21 @@ def run_app(
         return 1
 
     print(f"服务已就绪: {url}")
+
+    use_gui = mode in ("gui", "auto") and has_gui
+    if mode == "gui" and not has_gui:
+        print('没装 PySide6，装法: pip install -e ".[desktop]"', file=sys.stderr)
+    if use_gui:
+        print("正在打开桌面窗口（PySide6 / QWebEngineView）…")
+        try:
+            run_qt_window(url, workspace=workspace)
+        except Exception as exc:  # noqa: BLE001 - 窗口失败要降级，不能让整个命令挂掉
+            print(f"桌面窗口没起来（{type(exc).__name__}: {exc}），退回浏览器窗口", file=sys.stderr)
+        else:
+            print("窗口已关闭")
+            server.should_exit = True
+            thread.join(timeout=5)
+            return 0
 
     if found is None:
         print("没找到 Edge/Chrome，请手动打开上面的地址。按 Ctrl+C 结束。")

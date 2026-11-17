@@ -88,3 +88,29 @@ def test_no_api_key_returns_2(tmp_path, capsys, monkeypatch):
     code = main(["run", "x", "--workspace", str(tmp_path)])
     assert code == 2
     assert "API key" in capsys.readouterr().err
+
+def test_dev_no_redis_does_not_crash(monkeypatch, tmp_path):
+    """--no-redis 路径曾经 NameError：cli.py 里用了 os.environ 却没 import os，一跑就崩。"""
+    from argparse import Namespace
+
+    import uvicorn
+
+    import minicode.cli as cli
+    import minicode.dev as dev
+    import minicode.service as service
+
+    monkeypatch.setenv("MINICODE_REDIS_URL", "redis://127.0.0.1:6380/0")
+    monkeypatch.setattr(dev, "build_frontend", lambda root: None)
+    monkeypatch.setattr(dev, "ensure_redis", lambda root, enabled=True: (None, None))
+    monkeypatch.setattr(dev, "apply_env", lambda url: None)
+    monkeypatch.setattr(service, "create_app", lambda **kwargs: object())
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+
+    args = Namespace(
+        host="127.0.0.1", port=8999, workspace=tmp_path, token=None,
+        open=False, reload=False, build=False, no_redis=True, mode="auto",
+    )
+    assert cli.cmd_dev(args) == 0
+    # --no-redis 必须把外部设置的 Redis 地址清掉，否则会静默连上 Redis
+    import os
+    assert "MINICODE_REDIS_URL" not in os.environ

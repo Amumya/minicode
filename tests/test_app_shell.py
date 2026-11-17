@@ -1,16 +1,20 @@
 """桌面壳的测试。
 
-不起真浏览器、不起真服务 —— 只测"拼参数"和"找浏览器"这两件纯逻辑，
+不起真浏览器、不起真服务 —— 只测"拼参数""找浏览器""选窗口模式"这些纯逻辑，
 以及 dry-run 的输出形状。真窗口能不能弹出来只能人眼看，这里不假装能测。
 """
 
+import sys
+import types
 from pathlib import Path
 
+import minicode.app_shell as app_shell
 from minicode.app_shell import (
     BROWSER_CANDIDATES,
     browser_args,
     find_browser,
     looks_loaded,
+    qt_window_available,
     run_app,
     wait_for_health,
     window_titles,
@@ -64,6 +68,7 @@ def test_dry_run_prints_url_and_args(tmp_path, capsys):
     assert code == 0
     assert "8799" in out
     assert "服务地址" in out
+    assert "桌面窗口:" in out
 
 
 def test_dry_run_with_explicit_missing_browser(tmp_path, capsys):
@@ -118,9 +123,113 @@ def test_window_titles_returns_list():
     assert isinstance(window_titles(set()), list)
 
 
-def test_dry_run_shows_both_modes(tmp_path, capsys):
-    code = run_app(None, port=8801, workspace=tmp_path, dry_run=True)
-    out = capsys.readouterr().out
+# ------------------------------------------------------------------ PySide6 桌面窗口
+# 真实窗口只能在人眼前验证；这里测"是否可用"和"GUI 失败时的降级"两条逻辑。
+
+
+def test_qt_window_available_false_when_forced_off(monkeypatch):
+    monkeypatch.setenv("MINICODE_GUI", "0")
+    assert qt_window_available() is False
+
+
+def test_qt_window_available_true_with_pyside(monkeypatch):
+    monkeypatch.delenv("MINICODE_GUI", raising=False)
+    real = app_shell.importlib.util.find_spec
+
+    def fake_find_spec(name):
+        if name == "PySide6":
+            return object()
+        return real(name)
+
+    monkeypatch.setattr(app_shell.importlib.util, "find_spec", fake_find_spec)
+    assert qt_window_available() is True
+
+
+def test_qt_window_available_false_without_pyside(monkeypatch):
+    monkeypatch.delenv("MINICODE_GUI", raising=False)
+    real = app_shell.importlib.util.find_spec
+
+    def fake_find_spec(name):
+        if name == "PySide6":
+            return None
+        return real(name)
+
+    monkeypatch.setattr(app_shell.importlib.util, "find_spec", fake_find_spec)
+    assert qt_window_available() is False
+
+
+def _fake_uvicorn(monkeypatch):
+    """塞一个假 uvicorn，让 run_app 不真的起服务；返回记录 Server 实例的列表。"""
+    started = []
+    module = types.ModuleType("uvicorn")
+
+    class Server:
+        def __init__(self, config):
+            self.should_exit = False
+            started.append(self)
+
+        def run(self):
+            return None
+
+    class Config:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    module.Server = Server
+    module.Config = Config
+    monkeypatch.setitem(sys.modules, "uvicorn", module)
+    return started
+
+
+class _FakeProc:
+    pid = 4242
+
+    def poll(self):
+        return 0  # 窗口"立刻关闭"，让 run_app 不等
+
+
+def _patch_browser_path(monkeypatch):
+    monkeypatch.setattr(app_shell, "_port_in_use", lambda *a, **k: False)
+    monkeypatch.setattr(app_shell, "wait_for_health", lambda *a, **k: True)
+    monkeypatch.setattr(app_shell, "find_browser", lambda explicit=None: "edge.exe")
+    monkeypatch.setattr(app_shell, "_kill_tree", lambda proc: None)
+
+
+def test_run_app_gui_success_returns_without_browser(tmp_path, monkeypatch):
+    started = _fake_uvicorn(monkeypatch)
+    _patch_browser_path(monkeypatch)
+    monkeypatch.setattr(app_shell, "qt_window_available", lambda: True)
+    monkeypatch.setattr(app_shell, "run_qt_window", lambda *a, **k: 0)
+    launched = []
+    monkeypatch.setattr(
+        app_shell,
+        "launch_browser",
+        lambda *a, **k: launched.append(a) or (_FakeProc(), "app"),
+    )
+
+    code = run_app(None, port=8899, workspace=tmp_path, mode="auto")
     assert code == 0
-    assert "窗口模式: auto" in out
-    assert "--app=" in out or "没找到" in out
+    assert launched == []           # GUI 成功就不该再开浏览器
+    assert started[0].should_exit   # 窗口关了，服务要收掉
+
+
+def test_run_app_gui_failure_falls_back_to_browser(tmp_path, monkeypatch):
+    _fake_uvicorn(monkeypatch)
+    _patch_browser_path(monkeypatch)
+    monkeypatch.setattr(app_shell, "qt_window_available", lambda: True)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("页面 10 秒内没有加载完成")
+
+    monkeypatch.setattr(app_shell, "run_qt_window", boom)
+    used = {}
+    monkeypatch.setattr(
+        app_shell,
+        "launch_browser",
+        lambda browser, url, profile, mode="auto", **k: used.update(mode=mode)
+        or (_FakeProc(), "app"),
+    )
+
+    code = run_app(None, port=8899, workspace=tmp_path, mode="auto")
+    assert code == 0
+    assert used.get("mode") == "auto"   # 降级后仍按 auto 走浏览器窗口
