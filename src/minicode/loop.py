@@ -150,7 +150,7 @@ def run(
     bus = hooks if hooks is not None else default_hooks()
 
     rec.add("start", task=task, model=settings.model, tools=tools.names(),
-            hooks=bus.names())
+            hooks=bus.names(), system=system, max_steps=settings.max_steps)
     n_calls = 0      # 实际发起的工具调用次数（并行算多次）
     n_denied = 0
     n_models = 0     # 模型调用次数

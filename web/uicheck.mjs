@@ -58,11 +58,11 @@ const HISTORY_RUN = {
   id: "run-a",
   task: "数一下文件数量",
   status: "done",
-  result: { ok: true, final_text: "一共 **12** 个文件" },
+  result: { ok: true, final_text: "一共 **12** 个文件", steps: 1, stop_reason: "end_turn" },
   created_at: nowSec() - 3600,
   event_count: 2,
   events: [
-    { kind: "start", ts: nowSec(), data: { task: "数一下文件数量" } },
+    { kind: "start", ts: nowSec(), data: { task: "数一下文件数量", model: "m", tools: ["bash"], hooks: ["policy"], system: "你是 minicode 助手。\n规则一：先读文件。", max_steps: 1 } },
     { kind: "model_call", ts: nowSec(), data: { step: 1, stop_reason: "tool_use", usage: { input_tokens: 100, output_tokens: 20 }, tool_calls: 1 } },
     { kind: "thinking", ts: nowSec(), data: { step: 1, text: "先看看目录结构\n再数文件" } },
     { kind: "tool_call", ts: nowSec(), data: {
@@ -213,23 +213,46 @@ check("历史回答走 Markdown 渲染", doc.querySelector("#chat .answer strong
   doc.querySelector("#chat .answer")?.textContent ?? "");
 check("对话视图不显示工具原始信息（在轨迹里）",
   !doc.querySelector("#chat .tool-list"));
+check("对话视图不输出 thinking（没有思考块）",
+  !doc.querySelector("#chat details.thoughts") &&
+  !(doc.querySelector("#chat")?.textContent ?? "").includes("先看看目录结构"));
 
-// 轨迹视图：按步骤展示完整原始信息
+// 轨迹视图：追加式全事件日志
 doc.querySelector("#viewTrajectory").click();
-await sleep(150);
+await sleep(200);
 check("切到轨迹视图", doc.querySelector("#viewTrajectory").classList.contains("active") &&
   doc.querySelector("#chat").classList.contains("trajectory"));
-const steps = [...doc.querySelectorAll("#chat details.traj-step")];
-check("轨迹按步骤分组", steps.length >= 1, `${steps.length} 组`);
-const trajText = doc.querySelector("#chat")?.textContent ?? "";
-check("轨迹展示 thinking 全文", trajText.includes("先看看目录结构") && trajText.includes("再数文件"));
-check("轨迹展示完整工具参数", trajText.includes("Get-ChildItem"));
-check("轨迹展示完整工具输出", trajText.includes("aaa.txt") && trajText.includes("ccc.txt"));
-const rawJsonNodes = doc.querySelectorAll("#chat details.traj-raw-json pre");
-check("轨迹里有原始事件 JSON",
-  rawJsonNodes.length > 0 &&
-  [...rawJsonNodes].some((n) => (n.textContent ?? "").includes('"kind": "tool_call"')),
-  `${rawJsonNodes.length} 个: ${(rawJsonNodes[0]?.textContent ?? "").slice(0, 80)}`);
+const entries = [...doc.querySelectorAll("#chat .traj-entry")];
+check("轨迹是追加式事件日志", entries.length >= 3, `${entries.length} 条事件`);
+  const trajText = doc.querySelector("#chat")?.textContent ?? "";
+  check("轨迹列出系统提示入口", trajText.includes("系统提示（完整，点击展开）"));
+  check("轨迹展示 thinking 原文", trajText.includes("先看看目录结构") && trajText.includes("再数文件"));
+  check("轨迹按步骤分隔", !!doc.querySelector("#chat .traj-step-divider"));
+  const toolSections = [...doc.querySelectorAll("#chat details.traj-tool-section")];
+  check("工具参数/输出/META 默认收起",
+    toolSections.length >= 2 && toolSections.every((d) => !d.open),
+    `${toolSections.length} 个，展开 ${toolSections.filter((d) => d.open).length} 个`);
+  check("收起时不为工具内容建 DOM",
+    !doc.querySelector("#chat details.traj-tool-section pre"));
+  const rawJsonDetails = [...doc.querySelectorAll("#chat details.traj-event-json")];
+  check("每条事件都有原始事件 JSON 入口", rawJsonDetails.length >= 3, `${rawJsonDetails.length} 个`);
+  check("收起时不为原始 JSON 建 DOM",
+    !doc.querySelector("#chat details.traj-event-json pre"));
+
+  const openDetails = (d) => { d.open = true; d.dispatchEvent(new window.Event("toggle")); };
+  const systemDetails = doc.querySelector("#chat details.traj-system");
+  if (systemDetails) openDetails(systemDetails);
+  for (const d of toolSections) openDetails(d);
+  for (const d of rawJsonDetails) openDetails(d);
+  await sleep(120);
+  check("展开后能看到系统提示全文",
+    (doc.querySelector("#chat details.traj-system")?.textContent ?? "").includes("规则一"));
+  const toolText = toolSections.map((d) => d.textContent ?? "").join(" ");
+  check("展开后能看到完整工具参数", toolText.includes("Get-ChildItem"));
+  check("展开后能看到完整工具输出", toolText.includes("aaa.txt") && toolText.includes("ccc.txt"));
+  const rawText = rawJsonDetails.map((d) => d.textContent ?? "").join(" ");
+  check("原始事件 JSON 展开后是完整内容",
+    rawText.includes('"kind": "tool_call"'));
 
 doc.querySelector("#viewChat").click();
 await sleep(120);
@@ -287,16 +310,22 @@ check("顶栏花费在累加", doc.querySelector("#usage").textContent.includes(
 es.emit("tool_call", { kind: "tool_call", ts,
   data: { step: 2, tool: "create_task", args: { subject: "跑测试" }, exit_code: 0, failed: false } });
 await sleep(120);
-check("流式期间轨迹能实时看到新步骤", (() => {
-  doc.querySelector("#viewTrajectory").click();
-  return true;
-})());
+doc.querySelector("#viewTrajectory").click();
+await sleep(250);
+const firstTrajEntry = doc.querySelector("#chat .traj-entry");
+const entriesBefore = doc.querySelectorAll("#chat .traj-entry").length;
+check("流式期间轨迹能看到第 2 步",
+  doc.querySelector("#chat")?.textContent?.includes("第 2 步"),
+  `当前 ${entriesBefore} 条事件`);
 
-// 轨迹视图下继续收事件：需要等一帧重绘
-await sleep(200);
-check("轨迹实时出现第 2 步",
-  doc.querySelectorAll("#chat details.traj-step").length >= 2,
-  `${doc.querySelectorAll("#chat details.traj-step").length} 组`);
+es.emit("tool_call", { kind: "tool_call", ts,
+  data: { step: 3, tool: "bash", args: { command: "echo live" }, exit_code: 0, failed: false, output: "live" } });
+await sleep(250);
+check("轨迹实时追加新事件",
+  doc.querySelectorAll("#chat .traj-entry").length > entriesBefore,
+  `${entriesBefore} → ${doc.querySelectorAll("#chat .traj-entry").length}`);
+check("追加式：已有日志节点没被重建",
+  doc.querySelector("#chat .traj-entry") === firstTrajEntry);
 
 // 切回对话，继续流式文字断言
 doc.querySelector("#viewChat").click();
@@ -310,6 +339,12 @@ await sleep(120);
 check("流式文字边收边显示",
   doc.querySelector("#chat .answer.streaming")?.textContent?.includes("正在统计文件数量"));
 check("流式时有光标", !!doc.querySelector("#chat .answer.streaming .cursor"));
+const liveUserBubble = [...doc.querySelectorAll("#chat .msg.user .bubble")].at(-1);
+const liveAssistantBubble = [...doc.querySelectorAll("#chat .msg.assistant .bubble")].at(-1);
+check("流式输出写在助手气泡（不是「你」的气泡）",
+  !(liveUserBubble?.textContent ?? "").includes("正在统计") &&
+  (liveAssistantBubble?.textContent ?? "").includes("正在统计文件数量"),
+  `user=${(liveUserBubble?.textContent ?? "").slice(0, 30)}`);
 
 // ---- MCP 工具在轨迹里保留原始名字 ----
 es.emit("tool_call", { kind: "tool_call", ts,
@@ -323,15 +358,12 @@ check("轨迹里 MCP 工具保留原始名字",
 doc.querySelector("#viewChat").click();
 await sleep(120);
 
-// ---- thinking 内容展示（换行 + 第几步） ----
+// ---- thinking 只进轨迹，不进对话气泡 ----
 es.emit("thinking", { kind: "thinking", ts, data: { step: 2, text: "第一行思考\n第二行思考" } });
-await sleep(120);
-const thoughtBox = doc.querySelector("#chat details.thoughts");
-check("思考内容作为消息出现在气泡里", !!thoughtBox, "没有 details.thoughts");
-check("思考标了第几步并保留换行",
-  thoughtBox?.textContent?.includes("第 2 步") &&
-    thoughtBox?.querySelector(".thought-text")?.textContent?.trim() === "第一行思考\n第二行思考",
-  thoughtBox?.textContent?.slice(0, 60) ?? "(无)");
+await sleep(150);
+check("对话气泡不渲染 thinking",
+  !doc.querySelector("#chat details.thoughts") &&
+  !(doc.querySelector("#chat")?.textContent ?? "").includes("第一行思考"));
 
 // ---------------------------------------------------------------- 结束
 const FINAL_MD = [
@@ -370,6 +402,12 @@ check("危险链接不生成 <a>",
 check("结果在气泡最后一块",
   doc.querySelector("#chat .msg.assistant .bubble")?.lastElementChild?.classList.contains("answer") === true);
 check("气泡里没有工具调用（工具在轨迹视图）", !doc.querySelector("#chat .tool-list"));
+doc.querySelector("#viewTrajectory").click();
+await sleep(200);
+check("结束后轨迹里保留 thinking 原文",
+  (doc.querySelector("#chat")?.textContent ?? "").includes("第一行思考"));
+doc.querySelector("#viewChat").click();
+await sleep(150);
 check("结束后按钮变成「继续对话」", doc.querySelector("#submit").textContent === "继续对话");
 check("结束后状态徽章复位", doc.querySelector("#runStatus").hidden === true);
 
@@ -405,8 +443,9 @@ const es3 = sources.at(-1);
 es3.emit("end", { kind: "end", ts, data: { status: "done", result: { ok: false, stop_reason: "cancelled", steps: 1 } } });
 await sleep(150);
 const lastTurn = [...doc.querySelectorAll("#chat .turn")].at(-1);
-check("取消后显示「已取消」", lastTurn?.querySelector(".answer")?.textContent?.includes("已取消"),
-  lastTurn?.querySelector(".answer")?.textContent ?? "(无)");
+check("取消后显示「已取消」提示",
+    lastTurn?.querySelector(".answer-warning")?.textContent?.includes("已取消"),
+    lastTurn?.querySelector(".answer-warning")?.textContent ?? "(无)");
 check("结束/取消后隐藏「停止」按钮", doc.querySelector("#cancel").hidden === true);
 
 check("页面没有报错", errors.length === 0, errors.slice(0, 3).join(" | "));

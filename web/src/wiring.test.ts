@@ -21,6 +21,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MAIN = readFileSync(join(HERE, "main.ts"), "utf8");
 const API_SRC = readFileSync(join(HERE, "api.ts"), "utf8");
 const HTML = readFileSync(join(HERE, "..", "index.html"), "utf8");
+const CSS = readFileSync(join(HERE, "styles.css"), "utf8");
 const BACKEND = readFileSync(
   join(HERE, "..", "..", "src", "minicode", "service", "app.py"),
   "utf8",
@@ -104,6 +105,19 @@ test("会话删除接口后端确实提供", () => {
 
 test("index.html 引用了构建产物入口", () => {
   assert.match(HTML, /src\/main\.ts/);
+});
+
+test("轨迹视图是块级滚动容器（jsdom 量不了布局，只能静态盯着）", () => {
+  // flex 子项 + overflow:hidden 会把自动最小高度压成 0，内容被裁掉，滚动容器没高度。
+  const block = CSS.match(/\.chat\.trajectory\s*\{[^}]*\}/)?.[0] ?? "";
+  assert.match(block, /display:\s*block/, `轨迹视图必须用 block 布局: ${block}`);
+  assert.match(block, /overflow-y:\s*auto/, `轨迹视图必须是滚动容器: ${block}`);
+  assert.match(CSS, /\.chat\.trajectory \.traj-run\s*\{/, "轨迹卡片之间要有间距");
+});
+
+test("流式回答写进助手气泡（不是用户气泡）", () => {
+  // 一轮里有两个 .bubble，取第一个会把流式输出写进「你」的气泡。
+  assert.match(MAIN, /\.msg\.assistant \.bubble/);
 });
 
 test("页面骨架包含左栏、主区和对话-轨迹切换", () => {

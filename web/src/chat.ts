@@ -63,6 +63,8 @@ export interface Turn {
   thoughts: ThoughtView[];
   denied: number;
   createdAt: number;
+    /** start 事件里记录的步数上限（历史 run 可能没有） */
+    maxSteps?: number | null;
 }
 
 function rec(v: unknown): Record<string, unknown> {
@@ -117,8 +119,12 @@ export function buildTurn(run: RunLike): Turn {
   const tools: ToolCallView[] = [];
   const thoughts: ThoughtView[] = [];
   let denied = 0;
+  let maxSteps: number | null = null;
   for (const ev of events) {
-    if (ev.kind === "tool_call") tools.push(describeToolCall(ev));
+    if (ev.kind === "start") {
+      const d = rec(ev.data);
+      if (typeof d.max_steps === "number") maxSteps = d.max_steps;
+    } else if (ev.kind === "tool_call") tools.push(describeToolCall(ev));
     else if (ev.kind === "denied") denied += 1;
     else if (ev.kind === "thinking") {
       const d = rec(ev.data);
@@ -145,7 +151,32 @@ export function buildTurn(run: RunLike): Turn {
     thoughts,
     denied,
     createdAt: typeof run.created_at === "number" ? run.created_at : 0,
+    maxSteps,
   };
+}
+
+export type RunOutcome = "ok" | "interrupted" | "budget_boundary";
+
+/**
+ * 这一轮该怎么展示结尾。
+ *
+ * - interrupted：后端明确说没完成（max_steps / cancelled），哪怕模型最后还吐了段文字，
+ *   它也不是最终结果，界面必须先给中断提示，再标成"中断前的最后输出"。
+ * - budget_boundary：模型自己在步数上限那一步 end_turn 了。任务不一定没做完，
+ *   但正好卡在上限上，给用户一个"要确认/可继续"的提示。
+ */
+export function runOutcome(turn: Turn): RunOutcome {
+  if (!turn.ok && turn.status === "done") return "interrupted";
+  const limit = turn.maxSteps ?? 0;
+  if (
+    turn.ok &&
+    turn.stopReason === "end_turn" &&
+    limit > 0 &&
+    turn.usage.steps >= limit
+  ) {
+    return "budget_boundary";
+  }
+  return "ok";
 }
 
 /** 一个会话的若干 run → 按时间排好的轮次。 */

@@ -8,6 +8,7 @@ import {
   describeToolCall,
   mergeDeltaEvents,
   groupByDay,
+  runOutcome,
   shortTitle,
   statusTone,
 } from "./chat.ts";
@@ -206,4 +207,44 @@ test("buildTurn 收集 thinking，保留换行和步号", () => {
   assert.equal(turn.thoughts.length, 1);
   assert.equal(turn.thoughts[0].step, 1);
   assert.equal(turn.thoughts[0].text, "第一行\n第二行");
+});
+
+test("buildTurn 从 start 事件读 max_steps", () => {
+  const turn = buildTurn({
+    id: "r-max",
+    task: "干三步",
+    status: "done",
+    result: { ok: true, final_text: "好了", steps: 2, stop_reason: "end_turn" },
+    events: [
+      ev("start", { task: "干三步", max_steps: 20 }, 1),
+      ev("model_call", { step: 1 }), ev("model_call", { step: 2 }),
+    ],
+  });
+  assert.equal(turn.maxSteps, 20);
+});
+
+test("runOutcome：中断要提示、正好卡上限也要提示、正常结束不提示", () => {
+  const make = (result, events) => buildTurn({
+    id: "r", task: "x", status: "done", result, events,
+  });
+  const start = (max) => ev("start", { task: "x", max_steps: max }, 1);
+  const steps = (n) => Array.from({ length: n }, (_, i) => ev("model_call", { step: i + 1 }));
+
+  const interrupted = make(
+    { ok: false, final_text: "我先总结一下", steps: 3, stop_reason: "max_steps" },
+    [start(3), ...steps(3)],
+  );
+  assert.equal(runOutcome(interrupted), "interrupted");
+
+  const boundary = make(
+    { ok: true, final_text: "做完了", steps: 3, stop_reason: "end_turn" },
+    [start(3), ...steps(3)],
+  );
+  assert.equal(runOutcome(boundary), "budget_boundary");
+
+  const normal = make(
+    { ok: true, final_text: "做完了", steps: 2, stop_reason: "end_turn" },
+    [start(20), ...steps(2)],
+  );
+  assert.equal(runOutcome(normal), "ok");
 });

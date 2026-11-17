@@ -21,6 +21,7 @@ import {
 import {
   buildTurns,
   groupByDay,
+  runOutcome,
   shortTitle,
   statusTone,
   type Turn,
@@ -32,7 +33,6 @@ import {
   summarizeUsage,
   type PlanItem,
 } from "./derive.ts";
-import type { ThoughtView } from "./chat.ts";
 import { renderMarkdown } from "./markdown.ts";
 
 /* ------------------------------------------------------------------ 小工具 */
@@ -130,6 +130,28 @@ const main = {
 /* ------------------------------------------------------------------ 展开状态 */
 
 const detailsState = new Map<string, boolean>();
+
+function lazyDetailsBlock(
+  cls: string,
+  summaryText: string,
+  build: () => HTMLElement | null,
+  defaultOpen = false,
+): HTMLElement {
+  // 轨迹里的参数/输出/原始 JSON 可能很大，先不建 DOM，展开时才渲染。
+  const node = h("details", { class: cls });
+  let built = false;
+  const ensure = () => {
+    if (built || !node.open) return;
+    built = true;
+    const body = build();
+    if (body) node.append(body);
+  };
+  node.append(h("summary", {}, summaryText));
+  node.addEventListener("toggle", ensure);
+  node.open = defaultOpen;
+  if (defaultOpen) ensure();
+  return node;
+}
 
 function detailsBlock(
   key: string,
@@ -238,23 +260,6 @@ function renderConversations(): void {
 
 /* ------------------------------------------------------------------ 对话视图 */
 
-function thoughtBlock(thought: ThoughtView): HTMLElement {
-  const block = h("div", { class: "thought-step" });
-  block.append(h("div", { class: "thought-step-label" }, `第 ${thought.step} 步`));
-  block.append(h("pre", { class: "thought-text" }, `${thought.text}\n`));
-  return block;
-}
-
-function renderThoughts(turn: Turn): HTMLElement | null {
-  if (!turn.thoughts || turn.thoughts.length === 0) return null;
-  const steps = turn.thoughts.map((t) => t.step).join("、");
-  return detailsBlock(`${turn.runId}:thoughts`, "thoughts", `思考：第 ${steps} 步`, () => {
-    const list = h("div", { class: "thought-list" });
-    for (const thought of turn.thoughts) list.append(thoughtBlock(thought));
-    return list;
-  }, true);
-}
-
 function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
   if (!turn.plan || turn.plan.length === 0) return null;
   const done = turn.plan.filter((p) => p.status === "completed").length;
@@ -287,27 +292,36 @@ function renderTurn(turn: Turn, live = false): HTMLElement {
   const plan = renderPlan(turn, false);
   if (plan) bubble.append(plan);
 
-  const thoughts = renderThoughts(turn);
-  if (thoughts) bubble.append(thoughts);
-
   if (turn.usage.steps > 0) {
     bubble.append(h("div", { class: "turn-usage muted" }, formatUsage(turn.usage)));
   }
 
+  const outcome = runOutcome(turn);
   if (turn.error) {
     bubble.append(h("div", { class: "answer error" }, `出错：${turn.error}`));
-  } else if (turn.answer) {
-    bubble.append(h("div", { class: "answer-label" }, "结果"));
-    const answerNode = h("div", { class: "answer markdown" });
-    answerNode.append(renderMarkdown(turn.answer));
-    bubble.append(answerNode);
-  } else if (!turn.ok && turn.status === "error") {
+  } else if (turn.status === "error") {
     bubble.append(h("div", { class: "answer error" }, "执行失败（切换到「轨迹」查看原始信息）"));
-  } else if (!turn.ok && turn.status === "done") {
-    const text = turn.stopReason === "cancelled"
-      ? "已取消"
-      : "未完成（步数用尽或已中断）";
-    bubble.append(h("div", { class: "answer muted" }, text));
+  } else {
+    if (outcome === "interrupted") {
+      const label = turn.stopReason === "max_steps"
+        ? "步数用尽，任务中断"
+        : turn.stopReason === "cancelled"
+          ? "已取消"
+          : "任务未完成";
+      bubble.append(h("div", { class: "answer-warning" }, `${label}（这不是最终结果）`));
+    } else if (outcome === "budget_boundary") {
+      bubble.append(h("div", { class: "answer-hint" },
+        `本轮到第 ${turn.usage.steps} 步结束（等于步数上限 ${turn.maxSteps}）。如果任务没做完，点「继续执行」。`));
+    }
+    if (turn.answer) {
+      bubble.append(h("div", { class: "answer-label" },
+        outcome === "interrupted" ? "中断前模型的最后输出" : "结果"));
+      const answerNode = h("div", { class: "answer markdown" });
+      answerNode.append(renderMarkdown(turn.answer));
+      bubble.append(answerNode);
+    } else if (outcome === "interrupted") {
+      bubble.append(h("div", { class: "answer muted" }, "没有产出最终结果"));
+    }
   }
 
   assistant.append(bubble);
@@ -315,7 +329,13 @@ function renderTurn(turn: Turn, live = false): HTMLElement {
   return wrap;
 }
 
-/* ------------------------------------------------------------------ 轨迹视图（原始信息不省略） */
+/* ------------------------------------------------------------------ 轨迹视图（追加式全事件日志）
+
+参考 DSH 的 Trajectory：不是把 thinking 单独拎出来美化，而是把一次 run 的
+**全部事件**按发生顺序追加成日志：用户任务、系统提示、模型调用、thinking 原文、
+工具调用（完整参数/输出）、压缩、拒绝、结束……每一步之间插一条步骤分隔。
+新事件直接 append 到日志末尾，不重建整页。
+*/
 
 function prettyJson(value: unknown): string {
   try {
@@ -341,182 +361,221 @@ function stepOf(ev: AgentEvent): number | null {
   return step === undefined ? null : step;
 }
 
-interface StepGroup {
-  step: number | null;
-  events: AgentEvent[];
-}
-
-/** 按 data.step 分组，保持事件原始顺序。没有 step 的（start/mcp_ready）单独一组。 */
-function groupEventsByStep(events: AgentEvent[]): StepGroup[] {
-  const groups: StepGroup[] = [];
-  const index = new Map<number | null, StepGroup>();
-  for (const ev of events) {
-    const step = stepOf(ev);
-    let group = index.get(step);
-    if (!group) {
-      group = { step, events: [] };
-      index.set(step, group);
-      groups.push(group);
-    }
-    group.events.push(ev);
-  }
-  return groups;
-}
-
 function rawPre(text: string, cls = ""): HTMLElement {
   return h("pre", { class: `traj-pre ${cls}`.trim() }, text);
 }
 
-function renderTrajectoryItem(ev: AgentEvent): HTMLElement | null {
-  const data = (ev.data ?? {}) as Record<string, unknown>;
-  switch (ev.kind) {
-    case "assistant_delta":
-      return null; // 由调用方合并成一段"模型输出"
-    case "thinking": {
-      const item = h("div", { class: "traj-item thought" });
-      item.append(h("div", { class: "traj-label" }, `thinking · 第 ${numOf(ev, "step") ?? "?"} 步`));
-      item.append(rawPre(textOf(ev, "text"), "thinking-text"));
-      return item;
-    }
-    case "model_call": {
-      const usage = (data.usage ?? {}) as Record<string, unknown>;
-      const item = h("div", { class: "traj-item model" });
-      item.append(h("div", { class: "traj-label" }, "模型调用"));
-      item.append(h("div", { class: "traj-line" },
-        `stop_reason=${String(data.stop_reason ?? "?")} · 入 ${usage.input_tokens ?? 0} / 出 ${usage.output_tokens ?? 0} · 工具调用 ${data.tool_calls ?? 0} 个`));
-      return item;
-    }
-    case "tool_call": {
-      const item = h("div", { class: "traj-item tool" });
-      const head = h("div", { class: "traj-tool-head" });
-      head.append(h("span", { class: "traj-tool-name" }, String(data.tool ?? "?")));
-      if (typeof data.exit_code === "number") {
-        head.append(h("span", { class: `traj-exit ${data.failed === true ? "bad" : "ok"}` },
-          data.failed === true ? `exit ${data.exit_code}` : "exit 0"));
-      }
-      item.append(head);
-      if (data.args !== undefined) {
-        item.append(h("div", { class: "traj-label" }, "参数"));
-        item.append(rawPre(prettyJson(data.args), "json"));
-      }
-      item.append(h("div", { class: "traj-label" }, "输出（完整）"));
-      item.append(rawPre(typeof data.output === "string" ? data.output : "(无输出)", "output"));
-      if (data.meta && Object.keys(data.meta as Record<string, unknown>).length > 0) {
-        item.append(h("div", { class: "traj-label" }, "meta"));
-        item.append(rawPre(prettyJson(data.meta), "json"));
-      }
-      return item;
-    }
-    case "denied": {
-      const item = h("div", { class: "traj-item denied" });
-      item.append(h("div", { class: "traj-label" }, "权限拒绝"));
-      item.append(h("div", { class: "traj-line" },
-        `${String(data.reason ?? "?")}${data.detail ? ` · ${String(data.detail)}` : ""} · ${String(data.by ?? "")}`));
-      if (data.args !== undefined) item.append(rawPre(prettyJson(data.args), "json"));
-      return item;
-    }
-    case "hook_error": {
-      const item = h("div", { class: "traj-item hook-error" });
-      item.append(h("div", { class: "traj-label" }, "钩子异常"));
-      item.append(rawPre(prettyJson(data), "json"));
-      return item;
-    }
-    case "compact": {
-      const item = h("div", { class: "traj-item compact" });
-      item.append(h("div", { class: "traj-label" }, "上下文压缩"));
-      item.append(h("div", { class: "traj-line" },
-        `${data.chars_before ?? "?"} → ${data.chars_after ?? "?"} 字符（省 ${Math.round(Number(data.saved_ratio ?? 0) * 100)}%）；落盘 ${data.persisted ?? 0}、截断 ${data.trimmed ?? 0}、删整对 ${data.snipped_messages ?? 0}`));
-      return item;
-    }
-    case "finish": {
-      const item = h("div", { class: "traj-item finish" });
-      item.append(h("div", { class: "traj-label" }, "结束"));
-      item.append(h("div", { class: "traj-line" },
-        `ok=${String(data.ok ?? "?")} · reason=${String(data.reason ?? "?")}`));
-      return item;
-    }
-    case "unknown_tool": {
-      const item = h("div", { class: "traj-item denied" });
-      item.append(h("div", { class: "traj-label" }, "未知工具"));
-      item.append(h("div", { class: "traj-line" }, String(data.tool ?? "?")));
-      return item;
-    }
-    default: {
-      const described = describeEvent(ev);
-      const item = h("div", { class: "traj-item other" });
-      item.append(h("div", { class: "traj-label" }, described.label));
-      item.append(h("div", { class: "traj-line" }, described.detail));
-      item.append(rawPre(prettyJson(data), "json"));
-      return item;
-    }
-  }
-}
-
-function renderTrajectoryStep(runId: string, group: StepGroup): HTMLElement {
-  const title = group.step === null ? "轮次开始" : `第 ${group.step} 步`;
-  const tools = group.events.filter((e) => e.kind === "tool_call").length;
-  const thoughts = group.events.filter((e) => e.kind === "thinking").length;
-  const pieces = [
-    `${group.events.length} 条事件`,
-    thoughts ? `${thoughts} 段思考` : "",
-    tools ? `${tools} 次工具` : "",
-  ].filter(Boolean).join(" · ");
-
-  return detailsBlock(
-    `traj:${runId}:${group.step ?? "start"}`,
-    "traj-step",
-    `${title} · ${pieces}`,
-    () => {
-      const body = h("div", { class: "traj-step-body" });
-      let answerText = "";
-      const flushAnswer = () => {
-        if (!answerText) return;
-        const item = h("div", { class: "traj-item answer-raw" });
-        item.append(h("div", { class: "traj-label" }, "模型输出（流式片段合并）"));
-        item.append(rawPre(answerText, "answer-text"));
-        body.append(item);
-        answerText = "";
-      };
-      for (const ev of group.events) {
-        if (ev.kind === "assistant_delta") {
-          answerText += textOf(ev, "text");
-          continue;
-        }
-        const item = renderTrajectoryItem(ev);
-        if (item) body.append(item);
-      }
-      flushAnswer();
-      body.append(detailsBlock(
-        `traj:${runId}:${group.step ?? "start"}:json`,
-        "traj-raw-json",
-        `原始事件 JSON（${group.events.length} 条，不省略）`,
-        () => rawPre(prettyJson(group.events), "json"),
-        false,
-      ));
-      return body;
-    },
-    true,
+function eventRawJson(ev: AgentEvent): HTMLElement {
+  return lazyDetailsBlock(
+    "traj-event-json",
+    "原始事件 JSON",
+    () => rawPre(prettyJson(ev), "json"),
+    false,
   );
 }
 
-function renderTrajectoryRun(run: RunRow, index: number): HTMLElement {
+function trajectoryLabel(ev: AgentEvent): string {
+  switch (ev.kind) {
+    case "start": return "开始";
+    case "resume": return "从检查点恢复";
+    case "mcp_ready": return "MCP 连接";
+    case "thinking": return "thinking（模型推理原文）";
+    case "model_call": return "模型调用";
+    case "tool_call": return "工具调用";
+    case "denied": return "权限拒绝";
+    case "hook_error": return "钩子异常";
+    case "compact": return "上下文压缩";
+    case "finish": return "结束";
+    case "unknown_tool": return "未知工具";
+    default: return describeEvent(ev).label;
+  }
+}
+
+function renderTrajectoryEntry(ev: AgentEvent): HTMLElement {
+  const data = (ev.data ?? {}) as Record<string, unknown>;
+  const step = stepOf(ev);
+  const entry = h("div", { class: `traj-entry kind-${ev.kind}` });
+  const head = h("div", { class: "traj-entry-head" });
+  head.append(h("span", { class: "traj-kind" }, trajectoryLabel(ev)));
+  if (step !== null) head.append(h("span", { class: "traj-step-tag" }, `第 ${step} 步`));
+  entry.append(head);
+
+  switch (ev.kind) {
+    case "start": {
+      entry.append(h("div", { class: "traj-label" }, "用户任务"));
+      entry.append(rawPre(String(data.task ?? ""), "text"));
+      entry.append(h("div", { class: "traj-line" },
+        `model=${String(data.model ?? "?")} · tools=${Array.isArray(data.tools) ? data.tools.join(", ") : ""} · hooks=${Array.isArray(data.hooks) ? data.hooks.join(", ") : ""}`));
+      if (typeof data.system === "string" && data.system) {
+        entry.append(lazyDetailsBlock(
+          "traj-system",
+          "系统提示（完整，点击展开）",
+          () => rawPre(data.system as string, "text"),
+          false,
+        ));
+      }
+      break;
+    }
+    case "resume": {
+      entry.append(h("div", { class: "traj-line" },
+        `从第 ${data.from_step ?? "?"} 步恢复 · 再给 ${data.max_steps ?? "?"} 步 · 目标到第 ${data.until_step ?? "?"} 步`));
+      break;
+    }
+    case "mcp_ready": {
+      const servers = Array.isArray(data.servers) ? data.servers.join(", ") : "";
+      const warnings = Array.isArray(data.warnings) ? data.warnings.length : 0;
+      entry.append(h("div", { class: "traj-line" },
+        `${data.server_count ?? 0} 个 server · ${data.tool_count ?? 0} 个工具${servers ? ` · ${servers}` : ""}${warnings ? ` · ${warnings} 条警告` : ""}`));
+      break;
+    }
+    case "thinking": {
+      entry.append(rawPre(textOf(ev, "text"), "thinking-text"));
+      break;
+    }
+    case "model_call": {
+      const usage = (data.usage ?? {}) as Record<string, unknown>;
+      entry.append(h("div", { class: "traj-line" },
+        `stop_reason=${String(data.stop_reason ?? "?")} · 入 ${usage.input_tokens ?? 0} / 出 ${usage.output_tokens ?? 0} · 工具调用 ${data.tool_calls ?? 0} 个 · 文本 ${data.text_len ?? 0} 字`));
+      break;
+    }
+    case "tool_call": {
+      const toolHead = h("div", { class: "traj-tool-head" });
+      toolHead.append(h("span", { class: "traj-tool-name" }, String(data.tool ?? "?")));
+      if (typeof data.exit_code === "number") {
+        toolHead.append(h("span", { class: `traj-exit ${data.failed === true ? "bad" : "ok"}` },
+          data.failed === true ? `exit ${data.exit_code}` : "exit 0"));
+      }
+      entry.append(toolHead);
+      entry.append(lazyDetailsBlock(
+        "traj-tool-section",
+        `参数（完整）`,
+        () => rawPre(prettyJson(data.args ?? {}), "json"),
+        false,
+      ));
+      entry.append(lazyDetailsBlock(
+        "traj-tool-section",
+        "输出（完整，不截断）",
+        () => rawPre(typeof data.output === "string" ? data.output : "(无输出)", "output"),
+        false,
+      ));
+      if (data.meta && Object.keys(data.meta as Record<string, unknown>).length > 0) {
+        entry.append(lazyDetailsBlock(
+          "traj-tool-section",
+          "meta",
+          () => rawPre(prettyJson(data.meta), "json"),
+          false,
+        ));
+      }
+      break;
+    }
+    case "denied": {
+      entry.append(h("div", { class: "traj-line" },
+        `${String(data.reason ?? "?")}${data.detail ? ` · ${String(data.detail)}` : ""} · by ${String(data.by ?? "")}`));
+      if (data.args !== undefined) entry.append(rawPre(prettyJson(data.args), "json"));
+      break;
+    }
+    case "hook_error": {
+      entry.append(rawPre(prettyJson(data), "json"));
+      break;
+    }
+    case "compact": {
+      entry.append(h("div", { class: "traj-line" },
+        `${data.chars_before ?? "?"} → ${data.chars_after ?? "?"} 字符（省 ${Math.round(Number(data.saved_ratio ?? 0) * 100)}%）；落盘 ${data.persisted ?? 0}、截断 ${data.trimmed ?? 0}、删整对 ${data.snipped_messages ?? 0}`));
+      break;
+    }
+    case "finish": {
+      entry.append(h("div", { class: "traj-line" },
+        `ok=${String(data.ok ?? "?")} · reason=${String(data.reason ?? "?")}`));
+      break;
+    }
+    case "unknown_tool": {
+      entry.append(h("div", { class: "traj-line" }, String(data.tool ?? "?")));
+      break;
+    }
+    default: {
+      const described = describeEvent(ev);
+      entry.append(h("div", { class: "traj-line" }, described.detail));
+      entry.append(rawPre(prettyJson(data), "json"));
+      break;
+    }
+  }
+
+  entry.append(eventRawJson(ev));
+  return entry;
+}
+
+interface TrajLog {
+  runId: string;
+  log: HTMLElement;
+  lastStep: number | null | undefined;
+  pendingDelta: string;
+  pendingStep: number | null;
+}
+
+let trajLive: TrajLog | null = null;
+let trajFollowTail = true;
+let pendingTrajEvents: AgentEvent[] = [];
+let trajFlushScheduled = false;
+
+function flushTrajDelta(state: TrajLog): void {
+  if (!state.pendingDelta) return;
+  const text = state.pendingDelta;
+  state.pendingDelta = "";
+  const entry = h("div", { class: "traj-entry kind-assistant" });
+  const head = h("div", { class: "traj-entry-head" });
+  head.append(h("span", { class: "traj-kind" }, "助手输出"));
+  if (state.pendingStep !== null) {
+    head.append(h("span", { class: "traj-step-tag" }, `第 ${state.pendingStep} 步`));
+  }
+  entry.append(head);
+  entry.append(rawPre(text, "answer-text"));
+  state.log.append(entry);
+}
+
+function appendTrajectoryEvent(state: TrajLog, ev: AgentEvent): void {
+  const step = stepOf(ev);
+  if (step !== state.lastStep) {
+    flushTrajDelta(state);
+    state.lastStep = step;
+    if (step !== null) {
+      state.log.append(h("div", { class: "traj-step-divider" }, `第 ${step} 步`));
+    }
+  }
+  if (ev.kind === "assistant_delta") {
+    state.pendingDelta += textOf(ev, "text");
+    state.pendingStep = step;
+    return;
+  }
+  flushTrajDelta(state);
+  state.log.append(renderTrajectoryEntry(ev));
+}
+
+function buildTrajectoryRun(run: RunRow, index: number): { section: HTMLElement; state: TrajLog } {
   const events = run.events ?? [];
   const usage = summarizeUsage(events);
-  const section = h("section", { class: "traj-run" });
-
-  const head = h("div", { class: "traj-run-head" });
-  head.append(h("span", { class: "traj-run-index" }, `第 ${index + 1} 轮`));
-  head.append(h("span", { class: "traj-run-task" }, run.task));
   const result = (run.result ?? {}) as Record<string, unknown>;
   const runStatus = run.status ?? "queued";
   const status = runStatus === "done" && result.ok === false ? "未完成" : runStatus;
+
+  const section = h("section", { class: "traj-run" });
+  const head = h("div", { class: "traj-run-head" });
+  head.append(h("span", { class: "traj-run-index" }, `第 ${index + 1} 轮`));
+  head.append(h("span", { class: "traj-run-task" }, run.task));
   head.append(h("span", { class: `traj-run-status tone-${statusTone(runStatus)}` }, status));
   head.append(h("span", { class: "traj-run-meta muted" }, formatUsage(usage)));
   section.append(head);
 
-  for (const group of groupEventsByStep(events)) {
-    section.append(renderTrajectoryStep(run.id, group));
-  }
+  const log = h("div", { class: "traj-log" });
+  section.append(log);
+  const state: TrajLog = {
+    runId: run.id,
+    log,
+    lastStep: undefined,
+    pendingDelta: "",
+    pendingStep: null,
+  };
+  for (const ev of events) appendTrajectoryEvent(state, ev);
+  flushTrajDelta(state);
 
   if (run.error) {
     section.append(h("div", { class: "traj-result error" }, `错误：${run.error}`));
@@ -528,21 +587,29 @@ function renderTrajectoryRun(run: RunRow, index: number): HTMLElement {
     box.append(markdown);
     section.append(box);
   }
-  return section;
+  return { section, state };
 }
 
 function renderTrajectory(): void {
   main.chat.className = "chat trajectory";
+  pendingTrajEvents = [];
+  trajFlushScheduled = false;
   const scrollTop = main.chat.scrollTop;
   main.chat.replaceChildren();
+  trajLive = null;
   if (runs.length === 0) {
     main.chat.append(h("div", { class: "empty" },
       h("p", { class: "empty-title" }, "还没有运行记录"),
       h("p", { class: "muted" }, "在下方输入任务，或从左侧选择历史会话。")));
     return;
   }
-  runs.forEach((run, index) => main.chat.append(renderTrajectoryRun(run, index)));
-  main.chat.scrollTop = scrollTop;
+  runs.forEach((run, index) => {
+    const { section, state } = buildTrajectoryRun(run, index);
+    main.chat.append(section);
+    if (liveRun?.id === run.id) trajLive = state;
+  });
+  // 跟随尾部时直接定位到最后一行；用户往上翻看时保持原位置
+  main.chat.scrollTop = trajFollowTail ? main.chat.scrollHeight : scrollTop;
 }
 
 /* ------------------------------------------------------------------ 实时增量渲染（对话视图） */
@@ -550,8 +617,6 @@ function renderTrajectory(): void {
 interface LiveView {
   runId: string;
   planHost: HTMLElement;
-  thoughtsHost: HTMLElement;
-  thoughts: ThoughtView[];
   usageEl: HTMLElement;
   answerEl: HTMLElement;
   deltaText: string;
@@ -561,18 +626,17 @@ let liveView: LiveView | null = null;
 
 function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   const wrap = renderTurn(turn, true);
-  const bubble = wrap.querySelector(".bubble") as HTMLElement;
+  // 一轮里有两个 .bubble（用户 + 助手），必须取助手那个；
+  // 之前取第一个导致流式输出写进了「你」的气泡，跑完重绘才恢复。
+  const bubble = wrap.querySelector(".msg.assistant .bubble") as HTMLElement;
   const planHost = h("div", { class: "plan-host" });
-  const thoughtsHost = h("div", { class: "thoughts-host" });
   const usageEl = h("div", { class: "turn-usage muted" });
   const answerEl = h("div", { class: "answer streaming markdown" });
-  bubble.replaceChildren(planHost, thoughtsHost, usageEl, answerEl);
+  bubble.replaceChildren(planHost, usageEl, answerEl);
 
   const view: LiveView = {
     runId: turn.runId,
     planHost,
-    thoughtsHost,
-    thoughts: [],
     usageEl,
     answerEl,
     deltaText: "",
@@ -609,29 +673,12 @@ function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   }
 }
 
-function renderLiveThoughts(view: LiveView): void {
-  if (view.thoughts.length === 0) return;
-  const steps = view.thoughts.map((t) => t.step).join("、");
-  const node = detailsBlock(`${view.runId}:thoughts`, "thoughts", `思考：第 ${steps} 步`, () => {
-    const list = h("div", { class: "thought-list" });
-    for (const thought of view.thoughts) list.append(thoughtBlock(thought));
-    return list;
-  }, true);
-  view.thoughtsHost.replaceChildren(node);
-}
-
 function applyLiveEvent(ev: AgentEvent): void {
   const view = liveView;
   if (!view) return;
   if (ev.kind === "assistant_delta") {
     view.deltaText += textOf(ev, "text");
     renderLiveAnswer(view);
-  } else if (ev.kind === "thinking") {
-    const text = textOf(ev, "text");
-    if (text.trim()) {
-      view.thoughts.push({ step: numOf(ev, "step") ?? 0, text });
-      renderLiveThoughts(view);
-    }
   } else if (ev.kind === "tool_call") {
     renderLivePlan(view, latestPlan(liveEvents));
   }
@@ -643,8 +690,6 @@ function applyLiveEvent(ev: AgentEvent): void {
 function replayIntoLiveView(events: AgentEvent[], plan: PlanItem[] | null): void {
   const live = liveView as LiveView | null;
   if (!live) return;
-  live.thoughts = [];
-  live.thoughtsHost.replaceChildren();
   for (const ev of events) applyLiveEvent(ev);
   if (plan) renderLivePlan(live, plan);
 }
@@ -675,6 +720,7 @@ function renderViewTabs(): void {
 
 function setView(mode: ViewMode): void {
   viewMode = mode;
+  if (mode === "trajectory") trajFollowTail = true;
   remember(VIEW_KEY, mode);
   render();
 }
@@ -784,6 +830,7 @@ function setHash(rootId: string): void {
 async function openConversation(rootId: string, opts: { silent?: boolean } = {}): Promise<void> {
   const gen = ++conversationGeneration;
   conversationRoot = rootId;
+  trajFollowTail = true;
   setHash(rootId);
   remember(LAST_CONVERSATION_KEY, rootId);
   closeStream?.();
@@ -829,12 +876,30 @@ function attachStream(run: RunRow): void {
       liveEvents = [...liveEvents, ev];
       const current = runs.find((r) => r.id === run.id);
       if (current) current.events = liveEvents;
-      if (viewMode === "chat") applyLiveEvent(ev);
-      else render();
+      if (viewMode === "chat") {
+        applyLiveEvent(ev);
+      } else if (trajLive && trajLive.runId === run.id) {
+        pendingTrajEvents.push(ev);
+        if (!trajFlushScheduled) {
+          trajFlushScheduled = true;
+          window.requestAnimationFrame(() => {
+            trajFlushScheduled = false;
+            const batch = pendingTrajEvents;
+            pendingTrajEvents = [];
+            if (!trajLive) return;
+            for (const item of batch) appendTrajectoryEvent(trajLive, item);
+            if (trajFollowTail) main.chat.scrollTop = main.chat.scrollHeight;
+          });
+        }
+      } else {
+        render();
+      }
     },
     (_kind, ev) => {
       const data = (ev.data ?? {}) as Record<string, unknown>;
       liveRun = null;
+      pendingTrajEvents = [];
+      trajFlushScheduled = false;
       const current = runs.find((r) => r.id === run.id);
       if (current) {
         current.status = String(data.status ?? "done");
@@ -857,6 +922,7 @@ function newChat(): void {
   closeStream?.();
   closeStream = null;
   conversationRoot = "";
+  trajFollowTail = true;
   runs = [];
   liveRun = null;
   liveEvents = [];
@@ -1088,6 +1154,13 @@ for (const example of document.querySelectorAll<HTMLButtonElement>(".example")) 
 }
 main.viewChat.addEventListener("click", () => setView("chat"));
 main.viewTrajectory.addEventListener("click", () => setView("trajectory"));
+
+// 轨迹视图的"自动追踪最后一行"：跟丢是因为用户自己往上翻了，回到底部再恢复。
+main.chat.addEventListener("scroll", () => {
+  if (viewMode !== "trajectory") return;
+  const elNode = main.chat;
+  trajFollowTail = elNode.scrollHeight - elNode.scrollTop - elNode.clientHeight < 80;
+});
 
 window.addEventListener("hashchange", () => {
   const id = (window.location.hash.match(/^#\/c\/([0-9a-zA-Z_-]+)$/) ?? [])[1] ?? "";
