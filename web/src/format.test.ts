@@ -93,3 +93,13 @@ test("formatTime 输出 HH:MM:SS", () => {
   assert.match(formatTime(1794560284.5), /^\d{2}:\d{2}:\d{2}$/);
   assert.equal(formatTime(undefined), "");
 });
+
+test("thinking 事件标明第几步，详情压成一行", () => {
+  const d = describeEvent({
+    kind: "thinking",
+    data: { step: 3, text: "第一行\n第二行" },
+  });
+  assert.equal(d.label, "思考 #3");
+  assert.match(d.detail, /第一行 第二行/);
+  assert.equal(d.tone, "info");
+});

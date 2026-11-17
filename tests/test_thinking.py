@@ -12,6 +12,7 @@ thinking 的模型要求下一轮把这个块**原样**放回 assistant 消息�
 from types import SimpleNamespace
 
 from minicode.config import Settings
+from minicode.events import Recorder
 from minicode.hooks import HookBus
 from minicode.loop import _assistant_message, run
 from minicode.provider import AnthropicProvider, ModelReply, ToolCall
@@ -108,6 +109,7 @@ def test_loop_round_trip_keeps_thinking(tmp_path):
     registry.add(_EchoTool())
     provider = _RecordingProvider()
 
+    recorder = Recorder()
     result = run(
         "看看目录",
         provider=provider,
@@ -115,6 +117,7 @@ def test_loop_round_trip_keeps_thinking(tmp_path):
         settings=Settings(api_key="fake", max_steps=3),
         workspace=tmp_path,
         hooks=HookBus(),
+        recorder=recorder,
     )
 
     assert result.ok
@@ -137,3 +140,9 @@ def test_loop_round_trip_keeps_thinking(tmp_path):
         if m["role"] == "user" and isinstance(m["content"], list)
     )
     assert tool_user["content"][0]["type"] == "tool_result"
+
+    # 主循环还要把 thinking 发成事件（界面/CLI 按"第几步"展示）
+    thinking_events = [e for e in recorder.events if e.kind == "thinking"]
+    assert len(thinking_events) == 1
+    assert thinking_events[0].data["step"] == 1
+    assert thinking_events[0].data["text"] == "先执行命令"

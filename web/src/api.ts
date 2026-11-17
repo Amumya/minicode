@@ -183,6 +183,7 @@ export const EVENT_KINDS = [
   "start",
   "resume",
   "model_call",
+  "thinking",
   "tool_call",
   "assistant_delta",
   "denied",

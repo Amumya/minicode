@@ -75,6 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="不等窗口关闭（服务在后台继续跑）")
     a.add_argument("--mode", choices=("auto", "gui", "app", "window"), default="auto",
                    help="窗口模式：auto=先试桌面窗口/浏览器窗口，渲染不出来就降级")
+    a.add_argument("--no-redis", action="store_true",
+                   help="不用 Redis（内存存储，重新打开后历史会丢）")
 
     d = sub.add_parser("dev", help="一键起开发环境（Redis + 服务，可选开窗口）")
     d.add_argument("--host", default="127.0.0.1")
@@ -98,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--port", type=int, default=8080)
     s.add_argument("--workspace", type=Path, default=None)
     s.add_argument("--token", default=None, help="访问令牌（设了之后接口要求鉴权）")
+    s.add_argument("--no-redis", action="store_true",
+                   help="不用 Redis（内存存储，重启后历史会丢）")
 
     return p
 
@@ -240,6 +244,15 @@ def cmd_run(args, provider_factory=None) -> int:
     if not args.quiet:
         print("\n--- 事件 ---")
         for e in rec.events:
+            if e.kind == "thinking":
+                # thinking 是多行文本：单独排版，标清第几步，保留换行
+                step = e.data.get("step", "?")
+                print(f"  {'thinking':<12} 第 {step} 步")
+                text = str(e.data.get("text", ""))
+                for line in text.splitlines() or [""]:
+                    print(f"    {line}")
+                print()
+                continue
             brief = {
                 k: v
                 for k, v in e.data.items()
@@ -254,21 +267,58 @@ def cmd_run(args, provider_factory=None) -> int:
     return 0 if result.ok else 1
 
 
+
+def _ensure_persistent_store(root: Path, no_redis: bool):
+    """让 app/serve 默认用仓库里的便携 Redis（历史持久化）。
+
+    返回 (自己起的 redis 进程, url)；已经有外部 MINICODE_REDIS_URL 时不启动新进程。
+    """
+    from minicode import dev
+
+    if no_redis:
+        os.environ.pop("MINICODE_REDIS_URL", None)
+        print("存储: 内存（--no-redis，重新打开后历史会丢）")
+        return None, None
+
+    external = os.environ.get("MINICODE_REDIS_URL", "").strip()
+    if external:
+        print(f"存储: {external}（外部 Redis，历史会保存）")
+        return None, external
+
+    proc, url = dev.ensure_redis(root)
+    if url:
+        dev.apply_env(url)
+        print(f"存储: {url}（仓库里的便携 Redis，历史会保存）")
+    else:
+        print("存储: 内存（没找到便携 Redis，重新打开后历史会丢）")
+    return proc, url
+
+
 def cmd_app(args) -> int:
+    from minicode import dev
     from minicode.app_shell import run_app
     from minicode.service import create_app
 
-    app = create_app(default_workspace=args.workspace)
-    return run_app(
-        app,
-        host=args.host,
-        port=args.port,
-        workspace=args.workspace,
-        browser=args.browser,
-        mode=args.mode,
-        dry_run=args.dry_run,
-        wait_window=not args.no_wait,
-    )
+    if args.dry_run:
+        print("存储: （--dry-run 不启动 Redis）")
+        redis_proc = None
+    else:
+        redis_proc, _ = _ensure_persistent_store(_repo_root(), args.no_redis)
+
+    try:
+        app = create_app(default_workspace=args.workspace)
+        return run_app(
+            app,
+            host=args.host,
+            port=args.port,
+            workspace=args.workspace,
+            browser=args.browser,
+            mode=args.mode,
+            dry_run=args.dry_run,
+            wait_window=not args.no_wait,
+        )
+    finally:
+        dev.stop(redis_proc)
 
 
 def _repo_root() -> Path:
@@ -429,13 +479,18 @@ def cmd_serve(args) -> int:
         )
         return 2
 
+    from minicode import dev
     from minicode.service import create_app
 
-    app = create_app(default_workspace=args.workspace, token=args.token)
-    if args.token:
-        print("访问令牌已启用：浏览器界面里需要填同一个令牌")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-    return 0
+    redis_proc, _ = _ensure_persistent_store(_repo_root(), args.no_redis)
+    try:
+        app = create_app(default_workspace=args.workspace, token=args.token)
+        if args.token:
+            print("访问令牌已启用：浏览器界面里需要填同一个令牌")
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        return 0
+    finally:
+        dev.stop(redis_proc)
 
 
 def main(argv: list[str] | None = None, provider_factory=None) -> int:

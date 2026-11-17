@@ -189,3 +189,21 @@ test("mergeDeltaEvents 没有增量时原样返回", () => {
   const events = [ev("start", {}), ev("end", { status: "done" })];
   assert.deepEqual(mergeDeltaEvents(events).map((e) => e.kind), ["start", "end"]);
 });
+
+test("buildTurn 收集 thinking，保留换行和步号", () => {
+  const turn = buildTurn({
+    id: "r-think",
+    task: "想一下",
+    status: "done",
+    result: { ok: true, final_text: "好了" },
+    events: [
+      ev("model_call", { step: 1 }, 1),
+      ev("thinking", { step: 1, text: "第一行\n第二行" }, 2),
+      ev("thinking", { step: 2, text: "   " }, 3),
+      ev("end", { status: "done" }, 4),
+    ],
+  });
+  assert.equal(turn.thoughts.length, 1);
+  assert.equal(turn.thoughts[0].step, 1);
+  assert.equal(turn.thoughts[0].text, "第一行\n第二行");
+});

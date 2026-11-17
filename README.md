@@ -8,7 +8,7 @@
 但这些不是重点，重点是权限判定和评测这两层：每一步都有结构化事件，
 命令执行前要过权限检查，任务算不算完成由隐藏测试判定，不靠模型自述。
 
-现在有 392 条 Python 测试、67 条前端测试、64 项界面链路检查，CI 三个作业全绿。
+现在有 396 条 Python 测试、69 条前端测试、66 项界面链路检查，CI 三个作业全绿。
 
 > 仓库：`github.com/Amumya/minicode`　·　MIT　·　本地跑，默认只监听 127.0.0.1
 
@@ -70,7 +70,8 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 超时会连同子进程一起杀掉；输出是边读边攒的，超过上限就终止，不会先把内存吃满再截断。
 文件读写工具（`read_file / write_file / edit_file`）默认不开，早期是拿它跟纯 bash 做对照实验用的。
 一轮跑完可以接着聊下一轮，跑的过程中可以取消（当前这步结束后停），也可以派子代理去处理独立的小任务。
-模型返回的 thinking 块（带 signature）会原样保存并在下一轮 assistant 消息里回传，不会因为工具调用丢掉推理上下文。
+被 max_steps 截断时，检查点停在最后一次真实工具结果：续跑会接着执行，不会把"[skipped] 步数已用尽"喂给模型（那会让它直接总结收尾）。
+模型返回的 thinking 块（带 signature）会原样保存并在下一轮 assistant 消息里回传，不会因为工具调用丢掉推理上下文；思考内容会按「第 N 步」展示在对话里：默认展开、每块末尾换行。
 
 ### 能力一览
 
@@ -248,9 +249,9 @@ minicode app --mode gui
 
 | 部分 | 数量 | 命令 |
 |---|---|---|
-| Python 测试 | 392 条 | `pytest`（不需要 API key） |
-| 前端纯逻辑测试 | 67 条 | `npm --prefix web test` |
-| 界面链路检查 | 64 项 | `node web/uicheck.mjs` |
+| Python 测试 | 396 条 | `pytest`（不需要 API key） |
+| 前端纯逻辑测试 | 69 条 | `npm --prefix web test` |
+| 界面链路检查 | 66 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业（Python 3.11 / 3.12 / 前端） | `.github/workflows/ci.yml` |
 
 ## 怎么用
@@ -301,7 +302,9 @@ curl 加 `-H "Authorization: Bearer <令牌>"`，SSE 加 `?token=<令牌>`。`/h
 
 ### 接 Redis 持久化
 
-默认用内存存 run，重启就丢。要持久化就接 Redis：
+`minicode app` / `minicode serve` / `minicode dev` 默认会启动仓库里的便携 Redis，
+历史跨重启保存；如果机器上没有便携 Redis，会退化成内存存储（控制台会写明）。
+显式用内存：加 `--no-redis`。接自己的 Redis：
 
 ```powershell
 $env:MINICODE_REDIS_URL = "redis://127.0.0.1:6380/0"
@@ -368,7 +371,7 @@ src/minicode/
   service/         FastAPI 服务（app.py）、存储（store.py：内存 + Redis）
 web/               前端（TypeScript + Vite，无框架，产物已提交到 service/web/）
 eval/              沙箱任务集、判定器、对照实验脚本和原始记录（eval/runs/）
-tests/             392 条 Python 测试，外加一个 fixture MCP server
+tests/             396 条 Python 测试，外加一个 fixture MCP server
 docs/              决策台账、MCP 配置示例、界面截图
 ```
 
@@ -385,7 +388,7 @@ Windows 拒绝 ShellExecute，spawn explorer 会崩，与其留一个看着成�
 
 ## 评测与记录
 
-每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 64 条。
+每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 67 条。
 MCP 配置示例在 [docs/mcp.example.json](docs/mcp.example.json)。README 里的数字都能在那份台账里找到出处。
 
 评测目录的说明见 [eval/README.md](eval/README.md)：任务集、判定流程、防作弊、脚本参数、记录字段、

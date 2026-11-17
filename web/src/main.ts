@@ -31,7 +31,7 @@ import {
   type PlanItem,
   type TaskItem,
 } from "./derive.ts";
-import { describeToolCall, type ToolCallView } from "./chat.ts";
+import { describeToolCall, type ThoughtView, type ToolCallView } from "./chat.ts";
 import { renderMarkdown } from "./markdown.ts";
 import type { AgentEvent } from "./format.ts";
 
@@ -292,6 +292,24 @@ function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
   }, defaultOpen);
 }
 
+
+function thoughtBlock(thought: ThoughtView): HTMLElement {
+  const block = h("div", { class: "thought-step" });
+  block.append(h("div", { class: "thought-step-label" }, `第 ${thought.step} 步`));
+  block.append(h("pre", { class: "thought-text" }, `${thought.text}\n`));
+  return block;
+}
+
+function renderThoughts(turn: Turn, defaultOpen: boolean): HTMLElement | null {
+  if (!turn.thoughts || turn.thoughts.length === 0) return null;
+  const steps = turn.thoughts.map((t) => t.step).join("、");
+  return detailsBlock(`${turn.runId}:thoughts`, "thoughts", `思考：第 ${steps} 步`, () => {
+    const list = h("div", { class: "thought-list" });
+    for (const thought of turn.thoughts) list.append(thoughtBlock(thought));
+    return list;
+  }, defaultOpen);
+}
+
 /** 气泡：用户消息 + 计划 + 用量 + 结果。思考/看板/原始事件都在右栏。 */
 function renderTurn(
   turn: Turn,
@@ -311,6 +329,9 @@ function renderTurn(
 
   const plan = renderPlan(turn, defaultOpen);
   if (plan) bubble.append(plan);
+
+  const thoughts = renderThoughts(turn, true); // 思考默认展开：每次模型返回的 thinking 都要能看到
+  if (thoughts) bubble.append(thoughts);
 
   if (turn.usage.steps > 0) {
     bubble.append(h("div", { class: "turn-usage muted" }, formatUsage(turn.usage)));
@@ -503,6 +524,8 @@ async function renderMemory(workspace: string | undefined, enabled: boolean): Pr
 interface LiveView {
   runId: string;
   planHost: HTMLElement;
+  thoughtsHost: HTMLElement;
+  thoughts: ThoughtView[];
   usageEl: HTMLElement;
   answerEl: HTMLElement;
   toolCount: number;
@@ -528,9 +551,10 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   const bubble = h("div", { class: "bubble" });
 
   const planHost = h("div", { class: "plan-host" });
+  const thoughtsHost = h("div", { class: "thoughts-host" });
   const usageEl = h("div", { class: "turn-usage muted" });
   const answerEl = h("div", { class: "answer streaming markdown" });
-  bubble.append(planHost, usageEl, answerEl);
+  bubble.append(planHost, thoughtsHost, usageEl, answerEl);
 
   assistant.append(bubble);
   wrap.append(assistant);
@@ -538,6 +562,8 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   const view: LiveView = {
     runId: turn.runId,
     planHost,
+    thoughtsHost,
+    thoughts: [],
     usageEl,
     answerEl,
     toolCount: 0,
@@ -594,6 +620,24 @@ function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   }
 }
 
+
+function renderLiveThoughts(view: LiveView): void {
+  if (view.thoughts.length === 0) return;
+  const steps = view.thoughts.map((t) => t.step).join("、");
+  const node = detailsBlock(
+    `${view.runId}:thoughts`,
+    "thoughts",
+    `思考：第 ${steps} 步`,
+    () => {
+      const list = h("div", { class: "thought-list" });
+      for (const thought of view.thoughts) list.append(thoughtBlock(thought));
+      return list;
+    },
+    true,
+  );
+  view.thoughtsHost.replaceChildren(node);
+}
+
 function applyLiveEvent(ev: AgentEvent, silent = false): void {
   const view = liveView;
   if (!view) return;
@@ -613,6 +657,17 @@ function applyLiveEvent(ev: AgentEvent, silent = false): void {
     } else if (view.deltaDetail) {
       view.deltaDetail.textContent = view.deltaText.slice(0, 60);
     }
+  } else if (ev.kind === "thinking") {
+    const d = (ev.data ?? {}) as Record<string, unknown>;
+    const text = typeof d.text === "string" ? d.text : "";
+    if (text.trim()) {
+      view.thoughts.push({
+        step: typeof d.step === "number" ? d.step : 0,
+        text,
+      });
+      renderLiveThoughts(view);
+    }
+    appendRawRow(view, ev);
   } else if (ev.kind === "tool_call") {
     view.toolCount += 1;
     // 第一次有工具调用时把"暂无工具调用"的提示去掉
@@ -640,6 +695,11 @@ function applyLiveEvent(ev: AgentEvent, silent = false): void {
 function replayIntoLiveView(events: AgentEvent[], plan: PlanItem[] | null = null): void {
   panel.thinkList.replaceChildren(h("li", { class: "muted" }, "暂无工具调用"));
   panel.rawList.replaceChildren();
+  const live = liveView as LiveView | null;
+  if (live) {
+    live.thoughts = [];
+    live.thoughtsHost.replaceChildren();
+  }
   for (const ev of events) applyLiveEvent(ev, true);
   if (plan) renderLivePlan(liveView as LiveView, plan);
   updateTopbarUsage();

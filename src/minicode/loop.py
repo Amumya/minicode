@@ -74,6 +74,34 @@ def _assistant_message(reply: ModelReply) -> dict:
     return {"role": "assistant", "content": blocks}
 
 
+def _drop_stale_skipped(messages: list[dict]) -> list[dict]:
+    """去掉旧检查点尾部"步数用尽"的假 tool_result 和对应的 assistant tool_use。
+
+    旧实现到 max_steps 时会把"未执行的工具调用 + [skipped] 结果"一起存进检查点，
+    续跑时模型看到这些会以为任务被强行收尾，于是直接总结而不是接着干。
+    这里对旧检查点做一次兼容清理：末尾若是 assistant(tool_use) + user(skipped)，
+    整对丢掉，让模型从"最后一次真实工具结果"继续。
+    """
+    cleaned = list(messages)
+    while len(cleaned) >= 2:
+        last, prev = cleaned[-1], cleaned[-2]
+        if last.get("role") != "user" or not isinstance(last.get("content"), list):
+            break
+        skipped = [
+            block
+            for block in last["content"]
+            if isinstance(block, dict)
+            and block.get("type") == "tool_result"
+            and "[skipped]" in str(block.get("content", ""))
+        ]
+        if not skipped:
+            break
+        if prev.get("role") != "assistant" or not isinstance(prev.get("content"), list):
+            break
+        cleaned = cleaned[:-2]
+    return cleaned
+
+
 def run(
     task: str,
     *,
@@ -104,6 +132,7 @@ def run(
     usage_total = {"input_tokens": 0, "output_tokens": 0}
     if resume:
         messages: list[dict] = list(resume.get("messages") or [])
+        messages = _drop_stale_skipped(messages)
         start_step = int(resume.get("step", 0)) + 1
         # max_steps 是"**再给几步**"，不是"跑到第几步"。
         # 之前按绝对步数算：检查点停在 max_steps 时，续跑循环一次都不进，
@@ -203,24 +232,30 @@ def run(
             text_len=len(reply.text),
         )
 
-        messages.append(_assistant_message(reply))
+        # 把 thinking 内容单独记一条事件：CLI/界面要按"第 N 步"展示，
+        # 且不回灌进 assistant_delta（那是正式回答）。
+        if reply.thinking:
+            thinking_text = "\n\n".join(
+                str(block.get("thinking", "")).strip()
+                for block in reply.thinking
+                if block.get("type") == "thinking"
+                and str(block.get("thinking", "")).strip()
+            )
+            if thinking_text:
+                rec.add(
+                    "thinking",
+                    step=step,
+                    text=thinking_text,
+                    blocks=len(reply.thinking),
+                )
 
         # 最后一步还要求调工具：这些工具不执行。
-        # 执行了结果也永远不会再发给模型（循环到此结束），只会白花钱，
-        # 还可能有不可逆副作用。给一组"未执行"的结果让对话结构保持合法。
+        # **不能**把这一轮的 assistant tool_use 和假 tool_result 写进 messages/检查点：
+        # 续跑时模型会看到"[skipped] 步数已用尽"，然后直接总结收尾（实测踩过）。
+        # 检查点保持在"上一步工具结果补齐"的状态，续跑就从这里重新调用模型。
         if step == end_step and reply.tool_calls:
-            skipped = [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tc.id,
-                    "is_error": True,
-                    "content": "[skipped] 步数已用尽，这条工具调用没有执行",
-                }
-                for tc in reply.tool_calls
-            ]
-            messages.append({"role": "user", "content": skipped})
             if on_step is not None:
-                on_step({"messages": messages, "step": step, "usage": usage_total})
+                on_step({"messages": messages, "step": step - 1, "usage": usage_total})
             rec.add("finish", step=step, ok=False, reason="max_steps")
             return RunResult(
                 ok=False,
@@ -231,6 +266,8 @@ def run(
                 tool_calls=n_calls,
                 denied=n_denied,
             )
+
+        messages.append(_assistant_message(reply))
 
         if not reply.tool_calls:
             # 只有"模型自己说完了"才算成功。max_tokens = 回答被截断，

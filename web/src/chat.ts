@@ -41,6 +41,13 @@ export interface ToolCallView {
   mcpTool?: string;
 }
 
+export interface ThoughtView {
+  /** 第几步的思考 */
+  step: number;
+  /** 思考原文（保留换行） */
+  text: string;
+}
+
 export interface Turn {
   runId: string;
   /** 结束原因（end_turn / max_steps / cancelled / provider_error…） */
@@ -53,6 +60,7 @@ export interface Turn {
   usage: Usage;
   plan: PlanItem[] | null;
   tools: ToolCallView[];
+  thoughts: ThoughtView[];
   denied: number;
   createdAt: number;
 }
@@ -107,10 +115,21 @@ export function buildTurn(run: RunLike): Turn {
   const result = rec(run.result);
   const answer = typeof result.final_text === "string" ? result.final_text : "";
   const tools: ToolCallView[] = [];
+  const thoughts: ThoughtView[] = [];
   let denied = 0;
   for (const ev of events) {
     if (ev.kind === "tool_call") tools.push(describeToolCall(ev));
     else if (ev.kind === "denied") denied += 1;
+    else if (ev.kind === "thinking") {
+      const d = rec(ev.data);
+      const text = typeof d.text === "string" ? d.text : "";
+      if (text.trim()) {
+        thoughts.push({
+          step: typeof d.step === "number" ? d.step : 0,
+          text,
+        });
+      }
+    }
   }
   return {
     runId: run.id,
@@ -123,6 +142,7 @@ export function buildTurn(run: RunLike): Turn {
     usage,
     plan: latestPlan(events),
     tools,
+    thoughts,
     denied,
     createdAt: typeof run.created_at === "number" ? run.created_at : 0,
   };

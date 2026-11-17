@@ -306,6 +306,16 @@ check("MCP 工具名显示成 server/工具",
   mcpRow?.querySelector(".tool-name")?.textContent === "fixture/echo",
   mcpRow?.querySelector(".tool-name")?.textContent ?? "(无)");
 
+// ---- thinking 内容展示（换行 + 第几步） ----
+es.emit("thinking", { kind: "thinking", ts, data: { step: 2, text: "第一行思考\n第二行思考" } });
+await sleep(120);
+const thoughtBox = doc.querySelector("#chat details.thoughts");
+check("思考内容作为消息出现在气泡里", !!thoughtBox, "没有 details.thoughts");
+check("思考标了第几步并保留换行",
+  thoughtBox?.textContent?.includes("第 2 步") &&
+    thoughtBox?.querySelector(".thought-text")?.textContent?.trim() === "第一行思考\n第二行思考",
+  thoughtBox?.textContent?.slice(0, 60) ?? "(无)");
+
 // ---------------------------------------------------------------- 结束
 const FINAL_MD = [
   "tests 下有 **5** 个文件",

@@ -76,16 +76,23 @@ def test_interrupted_run_gets_checkpoint(tmp_path):
 
     checkpoint = store.get_checkpoint(run_id)
     assert checkpoint is not None
-    assert checkpoint["step"] == 2
+    # 检查点停在"最后一步真正执行完工具"的位置（不是被跳过的 max_steps 那一步）
+    assert checkpoint["step"] == 1
     assert len(checkpoint["messages"]) >= 3  # user + assistant + tool_result
+    # 关键：不能把"[skipped] 步数已用尽"写进检查点，否则续跑时模型会直接总结
+    joined = repr(checkpoint["messages"])
+    assert "[skipped]" not in joined
+    assert checkpoint["messages"][-1]["role"] == "user"
+    assert checkpoint["messages"][-1]["content"][0]["type"] == "tool_result"
 
 
 def test_resume_finishes_the_run(tmp_path):
     fake = fakeredis.FakeRedis(decode_responses=True)
     store = RedisStore(client=fake)
     provider = SharedProvider([
-        _tool_call(1), _tool_call(2),          # 第一次跑：两步都撞工具调用
-        ModelReply(text="补完了", stop_reason="end_turn"),  # 续跑：收尾
+        _tool_call(1), _tool_call(2),          # 第一次跑：第 1 步真执行，第 2 步被预算截断
+        _tool_call(3),                          # 续跑：第 2 步继续干
+        ModelReply(text="补完了", stop_reason="end_turn"),  # 第 3 步收尾
     ])
     client = _make_app(tmp_path, store, provider)
 
@@ -96,13 +103,16 @@ def test_resume_finishes_the_run(tmp_path):
     client2 = _make_app(tmp_path, store, provider)
     resp = client2.post(f"/runs/{run_id}/resume", json={"max_steps": 6})
     assert resp.status_code == 202
-    assert resp.json()["resumed_from_step"] == 2
+    # 检查点停在第 1 步；续跑从第 2 步开始
+    assert resp.json()["resumed_from_step"] == 1
 
     body = _wait(client2, run_id)
     assert body["status"] == "done"
     assert body["result"]["final_text"] == "补完了"
-    # 步数从 2 接着数，不是从 1 重来
+    # 续跑真的又执行了一次工具（不是直接总结），步数从 2 接着数
     assert body["result"]["steps"] == 3
+    tool_calls = [e for e in store.read_events(run_id) if e["kind"] == "tool_call"]
+    assert len(tool_calls) == 2  # 第 1 步的 t1 + 续跑第 2 步的 t3；t2 被截断没执行
 
 
 def test_events_from_before_restart_are_still_streamable(tmp_path):
@@ -148,3 +158,50 @@ def test_healthz_reports_store_type(tmp_path):
     fake = fakeredis.FakeRedis(decode_responses=True)
     client = _make_app(tmp_path, RedisStore(client=fake), SharedProvider([]))
     assert client.get("/healthz").json()["store"] == "RedisStore"
+
+def test_resume_drops_legacy_skipped_from_old_checkpoint(tmp_path):
+    """兼容旧检查点：assistant(tool_use) + user([skipped]) 要在续跑前丢掉。"""
+    from minicode.events import Recorder
+    from minicode.hooks import HookBus
+    from minicode.loop import run as run_loop
+    from minicode.tools import build_registry
+
+    seen = []
+
+    class RecordingProvider:
+        def __init__(self):
+            self._round = 0
+
+        def complete(self, system, messages, tools):
+            seen.append([dict(m) for m in messages])
+            self._round += 1
+            return ModelReply(text="继续完成", stop_reason="end_turn")
+
+    old_messages = [
+        {"role": "user", "content": "把活干完"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t9", "name": "bash", "input": {"command": "echo hi"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t9", "is_error": True,
+             "content": "[skipped] 步数已用尽，这条工具调用没有执行"},
+        ]},
+    ]
+    result = run_loop(
+        "把活干完",
+        provider=RecordingProvider(),
+        tools=build_registry(),
+        settings=Settings(api_key="fake", max_steps=2),
+        workspace=tmp_path,
+        hooks=HookBus(),
+        recorder=Recorder(),
+        resume={"messages": old_messages, "step": 2, "usage": {}},
+    )
+    assert result.ok
+    assert len(seen) == 1
+    # 续跑第一次请求里，旧的 assistant tool_use / skipped 结果已经被丢掉
+    joined = repr(seen[0])
+    assert "[skipped]" not in joined
+    assert "t9" not in joined
+    assert len(seen[0]) == 1
+    assert seen[0][0]["role"] == "user"

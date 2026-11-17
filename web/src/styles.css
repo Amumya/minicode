@@ -436,6 +436,41 @@ summary:hover {
   color: var(--text);
 }
 
+.thoughts-host {
+  margin: 6px 0;
+}
+
+details.thoughts {
+  margin-top: 6px;
+}
+
+.thought-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.thought-step {
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+.thought-step-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.thought-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
 .tool-list,
 .plan-list {
   margin: 6px 0 0;
