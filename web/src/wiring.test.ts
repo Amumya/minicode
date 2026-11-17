@@ -6,7 +6,7 @@
  *
  *   1. main.ts 里取的每个元素 id，index.html 里都真的有
  *   2. 前端请求的每个接口路径，后端真的提供（**直接解析 app.py 的路由**，不再维护白名单）
- *   3. 页面骨架里该有的区域都在（左栏 / 对话区 / 输入区 / 右侧详情面板）
+ *   3. 页面骨架里该有的区域都在（左栏 / 主区 / 输入区 / 对话-轨迹切换）
  *
  * 这几条错了，页面一打开就是"找不到元素 #xxx"或者一片 404。
  */
@@ -106,12 +106,14 @@ test("index.html 引用了构建产物入口", () => {
   assert.match(HTML, /src\/main\.ts/);
 });
 
-test("页面骨架包含左栏、对话区、输入区和右侧面板", () => {
+test("页面骨架包含左栏、主区和对话-轨迹切换", () => {
   for (const needle of ["minicode", "工作区", "新会话", "会话"]) {
     assert.ok(HTML.includes(needle), `index.html 里没有「${needle}」`);
   }
   assert.match(HTML, /class="sidebar"/);
   assert.match(HTML, /class="main"/);
   assert.match(HTML, /class="composer"/);
-  assert.match(HTML, /class="inspector"/);
+  assert.match(HTML, /id="viewChat"/);
+  assert.match(HTML, /id="viewTrajectory"/);
+  assert.ok(!HTML.includes("inspector"), "右栏应该已经删除");
 });

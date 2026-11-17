@@ -355,7 +355,7 @@ def run(
                 meta=tool_result.meta,
                 # 给界面看的输出预览：不带 [exit=] 前缀，太长就截断。
                 # 有了它用户不用点开事件流就能看到命令的结果。
-                output=str(tool_result.content)[:400],
+                output=str(tool_result.content),
             )
 
             post_ctx = HookContext(

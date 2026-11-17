@@ -2,8 +2,8 @@
 /**
  * 用 jsdom 把构建出来的 bundle 真跑一遍。
  *
- * 覆盖：左栏（工作区/历史会话）→ 点会话 → 新会话 → 提交 → 流式（右侧面板增量更新）
- *      → 任务看板 → 结束（Markdown 渲染、结果在最后、思考收起）→ 接着说 → 右栏收起/展开。
+ * 覆盖：左栏（工作区/历史会话）→ 点会话 → 对话/轨迹视图切换 → 轨迹展示完整原始信息
+ *      → 新会话 → 提交 → 流式 → 结束（Markdown 渲染）→ 接着说 → 删除 → 取消。
  *
  * 用法（在 web/ 下）：npm install --no-save jsdom && node uicheck.mjs
  */
@@ -63,8 +63,11 @@ const HISTORY_RUN = {
   event_count: 2,
   events: [
     { kind: "start", ts: nowSec(), data: { task: "数一下文件数量" } },
+    { kind: "model_call", ts: nowSec(), data: { step: 1, stop_reason: "tool_use", usage: { input_tokens: 100, output_tokens: 20 }, tool_calls: 1 } },
+    { kind: "thinking", ts: nowSec(), data: { step: 1, text: "先看看目录结构\n再数文件" } },
     { kind: "tool_call", ts: nowSec(), data: {
-        step: 1, tool: "bash", args: { command: "Get-ChildItem" }, exit_code: 0, failed: false } },
+        step: 1, tool: "bash", args: { command: "Get-ChildItem" },
+        exit_code: 0, failed: false, output: "aaa.txt\nbbb.txt\nccc.txt" } },
   ],
 };
 
@@ -196,10 +199,11 @@ check("五个开关默认全选", defaultSwitches.every((sel) => doc.querySelect
 check("默认步数是 20", doc.querySelector("#maxSteps").value === "20",
   doc.querySelector("#maxSteps").value);
 
-// ---------------------------------------------------------------- 右栏存在
-check("右侧详情面板存在", !!doc.querySelector("#inspector"));
-check("右栏有三个分区（工具调用/任务看板/原始事件）",
-  !!doc.querySelector("#thinkSection") && !!doc.querySelector("#boardSection") && !!doc.querySelector("#rawSection"));
+// ---------------------------------------------------------------- 视图切换（没有右侧栏）
+check("没有右侧详情栏", !doc.querySelector("#inspector"));
+check("导航栏有「对话 / 轨迹」切换",
+  !!doc.querySelector("#viewChat") && !!doc.querySelector("#viewTrajectory"));
+check("默认停在对话视图", doc.querySelector("#viewChat").classList.contains("active"));
 
 // ---------------------------------------------------------------- 打开历史会话
 doc.querySelector("#conversations .conv").click();
@@ -207,15 +211,35 @@ await sleep(150);
 check("点会话后加载出对话", doc.querySelectorAll("#chat .turn").length === 1);
 check("历史回答走 Markdown 渲染", doc.querySelector("#chat .answer strong")?.textContent === "12",
   doc.querySelector("#chat .answer")?.textContent ?? "");
-check("右栏显示这一轮的工具调用", doc.querySelectorAll("#thinkList .tool").length === 1,
-  `${doc.querySelectorAll("#thinkList .tool").length} 行`);
-check("右栏原始事件有条目", doc.querySelectorAll("#rawList .event").length >= 1);
+check("对话视图不显示工具原始信息（在轨迹里）",
+  !doc.querySelector("#chat .tool-list"));
+
+// 轨迹视图：按步骤展示完整原始信息
+doc.querySelector("#viewTrajectory").click();
+await sleep(150);
+check("切到轨迹视图", doc.querySelector("#viewTrajectory").classList.contains("active") &&
+  doc.querySelector("#chat").classList.contains("trajectory"));
+const steps = [...doc.querySelectorAll("#chat details.traj-step")];
+check("轨迹按步骤分组", steps.length >= 1, `${steps.length} 组`);
+const trajText = doc.querySelector("#chat")?.textContent ?? "";
+check("轨迹展示 thinking 全文", trajText.includes("先看看目录结构") && trajText.includes("再数文件"));
+check("轨迹展示完整工具参数", trajText.includes("Get-ChildItem"));
+check("轨迹展示完整工具输出", trajText.includes("aaa.txt") && trajText.includes("ccc.txt"));
+const rawJsonNodes = doc.querySelectorAll("#chat details.traj-raw-json pre");
+check("轨迹里有原始事件 JSON",
+  rawJsonNodes.length > 0 &&
+  [...rawJsonNodes].some((n) => (n.textContent ?? "").includes('"kind": "tool_call"')),
+  `${rawJsonNodes.length} 个: ${(rawJsonNodes[0]?.textContent ?? "").slice(0, 80)}`);
+
+doc.querySelector("#viewChat").click();
+await sleep(120);
+check("切回对话视图", doc.querySelector("#viewChat").classList.contains("active") &&
+  doc.querySelectorAll("#chat .turn").length === 1);
 
 // ---------------------------------------------------------------- 新会话
 doc.querySelector("#newChat").click();
-await sleep(80);
+await sleep(120);
 check("新会话回到空状态", !doc.querySelector("#empty").hidden);
-check("新会话清空右栏工具", doc.querySelectorAll("#thinkList .tool").length === 0);
 
 // ---------------------------------------------------------------- 提交 + 流式
 doc.querySelector("#task").value = "列出 tests 目录";
@@ -258,32 +282,25 @@ es.emit("tool_call", { kind: "tool_call", ts,
           exit_code: 0, failed: false, output: "test_a.py\ntest_b.py\ntest_c.py" } });
 await sleep(120);
 
-check("工具调用出现在右栏（不在气泡里）",
-  doc.querySelectorAll("#thinkList .tool").length === 1 &&
-  !doc.querySelector("#chat details.process"),
-  `面板 ${doc.querySelectorAll("#thinkList .tool").length} 行`);
-check("右栏显示完整命令", doc.querySelector("#thinkList .tool-command")?.textContent?.includes("Get-ChildItem tests"));
-check("右栏显示命令输出预览", doc.querySelector("#thinkList .tool-output")?.textContent?.includes("test_b.py"));
-check("右栏工具调用计数更新", doc.querySelector("#thinkMeta").textContent.includes("共 1 次"),
-  doc.querySelector("#thinkMeta").textContent);
 check("顶栏花费在累加", doc.querySelector("#usage").textContent.includes("入 120"));
 
-// ---- 增量渲染：新事件不重建已有节点 ----
-const thinkSectionNode = doc.querySelector("#thinkSection");
-const firstToolNode = doc.querySelector("#thinkList .tool");
-const rawCountBefore = doc.querySelector("#rawList").children.length;
-const processCountBefore = doc.querySelectorAll("#thinkList .tool").length;
 es.emit("tool_call", { kind: "tool_call", ts,
   data: { step: 2, tool: "create_task", args: { subject: "跑测试" }, exit_code: 0, failed: false } });
 await sleep(120);
-check("新事件后右栏还是同一个 DOM 节点", doc.querySelector("#thinkSection") === thinkSectionNode);
-check("已有工具行没被重建", doc.querySelector("#thinkList .tool") === firstToolNode);
-check("工具行只追加了一个",
-  doc.querySelectorAll("#thinkList .tool").length === processCountBefore + 1,
-  `${processCountBefore} → ${doc.querySelectorAll("#thinkList .tool").length}`);
-check("原始事件只追加了一行",
-  doc.querySelector("#rawList").children.length === rawCountBefore + 1,
-  `${rawCountBefore} → ${doc.querySelector("#rawList").children.length}`);
+check("流式期间轨迹能实时看到新步骤", (() => {
+  doc.querySelector("#viewTrajectory").click();
+  return true;
+})());
+
+// 轨迹视图下继续收事件：需要等一帧重绘
+await sleep(200);
+check("轨迹实时出现第 2 步",
+  doc.querySelectorAll("#chat details.traj-step").length >= 2,
+  `${doc.querySelectorAll("#chat details.traj-step").length} 组`);
+
+// 切回对话，继续流式文字断言
+doc.querySelector("#viewChat").click();
+await sleep(150);
 
 // ---- 流式文字 ----
 for (const piece of ["正在", "统计文件", "数量…"]) {
@@ -294,17 +311,17 @@ check("流式文字边收边显示",
   doc.querySelector("#chat .answer.streaming")?.textContent?.includes("正在统计文件数量"));
 check("流式时有光标", !!doc.querySelector("#chat .answer.streaming .cursor"));
 
-// ---- MCP 工具来源标记 ----
+// ---- MCP 工具在轨迹里保留原始名字 ----
 es.emit("tool_call", { kind: "tool_call", ts,
   data: { step: 3, tool: "mcp__fixture__echo", args: { text: "hi" },
           exit_code: 0, failed: false, output: "hi" } });
-await sleep(150);
-const mcpRow = [...doc.querySelectorAll("#thinkList .tool")].at(-1);
-check("MCP 工具显示来源标记", mcpRow?.querySelector(".tool-source")?.textContent === "MCP",
-  mcpRow?.querySelector(".tool-source")?.textContent ?? "(无)");
-check("MCP 工具名显示成 server/工具",
-  mcpRow?.querySelector(".tool-name")?.textContent === "fixture/echo",
-  mcpRow?.querySelector(".tool-name")?.textContent ?? "(无)");
+await sleep(120);
+doc.querySelector("#viewTrajectory").click();
+await sleep(200);
+check("轨迹里 MCP 工具保留原始名字",
+  doc.querySelector("#chat")?.textContent?.includes("mcp__fixture__echo"));
+doc.querySelector("#viewChat").click();
+await sleep(120);
 
 // ---- thinking 内容展示（换行 + 第几步） ----
 es.emit("thinking", { kind: "thinking", ts, data: { step: 2, text: "第一行思考\n第二行思考" } });
@@ -352,26 +369,9 @@ check("危险链接不生成 <a>",
   ![...answerEl.querySelectorAll("a")].some((a) => (a.getAttribute("href") ?? "").startsWith("javascript:")));
 check("结果在气泡最后一块",
   doc.querySelector("#chat .msg.assistant .bubble")?.lastElementChild?.classList.contains("answer") === true);
-check("气泡里没有工具调用（都在右栏）", !doc.querySelector("#chat .tool-list"));
-check("右栏记忆面板拿到条目", doc.querySelectorAll("#memoryList .memory-item").length === 2,
-  `${doc.querySelectorAll("#memoryList .memory-item").length} 条`);
-check("右栏记忆计数正确", doc.querySelector("#memoryMeta").textContent.includes("2 条"),
-  doc.querySelector("#memoryMeta").textContent);
-check("结束后右栏任务看板渲染出卡片",
-  doc.querySelectorAll("#boardBody .task-card").length === 2,
-  `${doc.querySelectorAll("#boardBody .task-card").length} 张`);
+check("气泡里没有工具调用（工具在轨迹视图）", !doc.querySelector("#chat .tool-list"));
 check("结束后按钮变成「继续对话」", doc.querySelector("#submit").textContent === "继续对话");
 check("结束后状态徽章复位", doc.querySelector("#runStatus").hidden === true);
-
-// ---------------------------------------------------------------- 右栏收起/展开
-doc.querySelector("#toggleInspector").click();
-await sleep(50);
-check("点顶栏按钮能收起右栏",
-  doc.querySelector("#appRoot").classList.contains("inspector-hidden"));
-doc.querySelector("#toggleInspector").click();
-await sleep(50);
-check("再点一次能展开右栏",
-  !doc.querySelector("#appRoot").classList.contains("inspector-hidden"));
 
 // ---------------------------------------------------------------- 继续对话 + 出错
 // 先设令牌：验证 SSE（EventSource 不能带头，只能走 ?token=）

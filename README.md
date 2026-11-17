@@ -8,35 +8,28 @@
 但这些不是重点，重点是权限判定和评测这两层：每一步都有结构化事件，
 命令执行前要过权限检查，任务算不算完成由隐藏测试判定，不靠模型自述。
 
-现在有 396 条 Python 测试、69 条前端测试、66 项界面链路检查，CI 三个作业全绿。
+现在有 396 条 Python 测试、69 条前端测试、60 项界面链路检查，CI 三个作业全绿。
 
 > 仓库：`github.com/Amumya/minicode`　·　MIT　·　本地跑，默认只监听 127.0.0.1
 
 ## 演示
 
-下面三张是实际跑起来的界面截图。
+下面两张是实际跑起来的界面截图（同一轮任务）。
 
-### 三栏界面
+### 对话视图
 
-![三栏界面](docs/images/ui-overview.png)
+![对话视图](docs/images/ui-chat.png)
 
-左栏是工作区和按日期分组的历史会话；中间是流式对话，结果按 Markdown 渲染；
-右栏详情面板列出每次工具调用的命令和输出。顶栏显示这一轮的步数、token、工具数、
-耗时和压缩次数。
+左栏是工作区和按日期分组的历史会话；主区顶栏可以在「对话 / 轨迹」之间切换。
+对话视图里每轮显示计划、思考（默认展开、按步骤标号）、用量和 Markdown 结果。
 
-### MCP 工具
+### 轨迹视图
 
-![MCP 工具](docs/images/ui-mcp.png)
+![轨迹视图](docs/images/ui-trajectory.png)
 
-外部 MCP server 提供的工具带 `MCP` 标记，方便区分来源；没在 `allow` 白名单里的工具
-不会注册，模型看不到。
-
-### 长期记忆
-
-![长期记忆](docs/images/ui-memory.png)
-
-记忆工具 `remember / recall / forget` 会在右栏原始事件里留下调用记录
-（包括写了什么 id、删了什么 id），右侧工具面板能直接看到记忆文件的内容。
+轨迹视图按轮次和步骤展开完整原始记录：thinking 全文、模型调用用量、工具参数、
+完整工具输出、meta，以及每一步可展开的原始事件 JSON。这里不做截断，方便核对
+每一步到底发生了什么。
 
 ## 目录
 
@@ -96,8 +89,10 @@ gemini-cli 十万，OpenHands 八万多。再多一个"能读文件、能改代�
 
 ### 界面与服务
 
-界面是上面截图里的三栏布局。会话在存储里就是一条 `parent_id` 链，`/conversations`
-把它们串成会话，左栏按日期分组；`/#/c/<会话 id>` 可以直接打开某个会话。
+界面是上面截图里的两视图布局：左栏工作区和历史会话，主区顶栏切换「对话 / 轨迹」。
+轨迹视图按轮次/步骤展示完整原始记录，不折叠、不截断。会话在存储里就是一条
+`parent_id` 链，`/conversations` 把它们串成会话，左栏按日期分组；
+`/#/c/<会话 id>` 可以直接打开某个会话，加 `?view=trajectory` 直接进轨迹视图。
 命令行有 `run / serve / dev / app / mcp`，`dev` 会顺手把 Redis 起来，`app` 是独立窗口，
 渲染不出来会往普通窗口和系统浏览器降级。服务端用 SSE 推事件，支持断点续传。
 默认没有鉴权、只监听 127.0.0.1，要的话可以用 `--token` 或 `MINICODE_TOKEN` 加一层令牌：
@@ -251,7 +246,7 @@ minicode app --mode gui
 |---|---|---|
 | Python 测试 | 396 条 | `pytest`（不需要 API key） |
 | 前端纯逻辑测试 | 69 条 | `npm --prefix web test` |
-| 界面链路检查 | 66 项 | `node web/uicheck.mjs` |
+| 界面链路检查 | 60 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业（Python 3.11 / 3.12 / 前端） | `.github/workflows/ci.yml` |
 
 ## 怎么用
@@ -388,7 +383,7 @@ Windows 拒绝 ShellExecute，spawn explorer 会崩，与其留一个看着成�
 
 ## 评测与记录
 
-每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 67 条。
+每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 68 条。
 MCP 配置示例在 [docs/mcp.example.json](docs/mcp.example.json)。README 里的数字都能在那份台账里找到出处。
 
 评测目录的说明见 [eval/README.md](eval/README.md)：任务集、判定流程、防作弊、脚本参数、记录字段、

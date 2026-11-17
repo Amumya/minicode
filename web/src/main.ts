@@ -1,8 +1,12 @@
 /**
- * 界面接线：左栏（工作区 + 历史会话）+ 右侧对话流。
+ * 界面接线：左栏（工作区 + 历史会话）+ 主区（对话 / 轨迹两个视图）。
  *
- * 分层：纯逻辑在 chat.ts / derive.ts / format.ts（都有单测），
- * 接口在 api.ts，这里只负责"把状态画到 DOM 上"和"把用户操作变成请求"。
+ * 参考 DSH Web GUI 的结构：主区通过导航栏切换视图，而不是常驻一个右栏。
+ * - 对话：按轮次展示问题、计划、思考、结果（流式增量更新）
+ * - 轨迹：按轮次/步骤展示完整原始记录（thinking 全文、工具参数、完整输出、事件 JSON），不省略
+ *
+ * 分层：纯逻辑在 chat.ts / derive.ts / format.ts（都有单测），接口在 api.ts，
+ * 这里只负责"把状态画到 DOM 上"和"把用户操作变成请求"。
  */
 
 import "./styles.css";
@@ -16,24 +20,20 @@ import {
 } from "./api.ts";
 import {
   buildTurns,
-  mergeDeltaEvents,
   groupByDay,
   shortTitle,
   statusTone,
   type Turn,
 } from "./chat.ts";
-import { describeEvent } from "./format.ts";
+import { describeEvent, type AgentEvent } from "./format.ts";
 import {
-  buildTaskBoard,
   formatUsage,
   latestPlan,
   summarizeUsage,
   type PlanItem,
-  type TaskItem,
 } from "./derive.ts";
-import { describeToolCall, type ThoughtView, type ToolCallView } from "./chat.ts";
+import type { ThoughtView } from "./chat.ts";
 import { renderMarkdown } from "./markdown.ts";
-import type { AgentEvent } from "./format.ts";
 
 /* ------------------------------------------------------------------ 小工具 */
 
@@ -67,6 +67,7 @@ function el<T extends HTMLElement>(id: string): T {
 
 const LAST_CONVERSATION_KEY = "minicode:conversation";
 const LAST_WORKSPACE_KEY = "minicode:workspace";
+const VIEW_KEY = "minicode:view";
 
 function remember(key: string, value: string): void {
   try {
@@ -122,14 +123,11 @@ const main = {
   optTasks: el<HTMLInputElement>("optTasks"),
   optMemory: el<HTMLInputElement>("optMemory"),
   optMcp: el<HTMLInputElement>("optMcp"),
+  viewChat: el<HTMLButtonElement>("viewChat"),
+  viewTrajectory: el<HTMLButtonElement>("viewTrajectory"),
 };
 
-/* ------------------------------------------------------------------ 展开状态
-
-为什么需要：每次事件都会重画整个对话区，<details> 的 open 状态会被重建掉。
-用户展开"过程"想看细节，来了一条新事件就被关回去 —— 很烦。
-把展开状态按"轮次+区块"记在内存里，重画后恢复。
-*/
+/* ------------------------------------------------------------------ 展开状态 */
 
 const detailsState = new Map<string, boolean>();
 
@@ -143,9 +141,6 @@ function detailsBlock(
   const node = h("details", { class: cls });
   const initialOpen = detailsState.has(key) ? detailsState.get(key)! : defaultOpen;
   node.open = initialOpen;
-  // 只记录"和初始状态不同"的切换。
-  // 直接监听 toggle 会把它自己的初始设置也当成用户操作（代码设 open=true 同样触发 toggle），
-  // 结果"结束后自动收起"永远不生效 —— 这是实测踩到的。
   node.addEventListener("toggle", () => {
     if (node.open !== initialOpen) detailsState.set(key, node.open);
   });
@@ -157,6 +152,8 @@ function detailsBlock(
 
 /* ------------------------------------------------------------------ 状态 */
 
+type ViewMode = "chat" | "trajectory";
+
 let workspaces: Workspace[] = [];
 let conversations: Conversation[] = [];
 /** 当前会话的所有 run（按时间排好），live run 也在里面 */
@@ -167,6 +164,7 @@ let liveRun: RunRow | null = null;
 let liveEvents: AgentEvent[] = [];
 let closeStream: (() => void) | null = null;
 let renderQueued = false;
+let viewMode: ViewMode = "chat";
 
 function currentConversation(): Conversation | null {
   return conversations.find((c) => c.root_id === conversationRoot) ?? null;
@@ -211,7 +209,6 @@ function renderConversations(): void {
   for (const group of groupByDay(conversations)) {
     sidebar.conversations.append(h("div", { class: "group-label" }, group.label));
     for (const conv of group.items) {
-      // 多包一层：会话按钮和删除按钮是兄弟节点（button 里不能再嵌 button）
       const row = h("div", { class: "conv-row" });
       const item = h("button", { class: "conv", dataset: { root: conv.root_id } });
       if (conv.root_id === conversationRoot) {
@@ -219,60 +216,43 @@ function renderConversations(): void {
         item.setAttribute("aria-current", "true");
       }
       const tone = statusTone(conv.status);
-      const dot = h("span", { class: `dot tone-${tone}` });
-      dot.setAttribute("aria-label", `状态：${conv.status}`);
-      const title = h("span", { class: "conv-title" }, shortTitle(conv.title));
-      const meta = h("span", { class: "conv-meta" }, conv.turns && conv.turns > 1 ? `${conv.turns} 轮` : "");
-      item.append(dot, title, meta);
-      item.title = conv.title;
+      item.append(h("span", { class: `dot tone-${tone}` }));
+      item.append(h("span", { class: "conv-title" }, shortTitle(conv.title, 30)));
+      if (conv.turns && conv.turns > 1) {
+        item.append(h("span", { class: "conv-turns" }, `${conv.turns} 轮`));
+      }
       item.addEventListener("click", () => void openConversation(conv.root_id));
+      row.append(item);
 
-      const remove = h("button", { class: "conv-del", title: "删除这个会话" }, "×");
-      remove.setAttribute("aria-label", `删除会话：${conv.title}`);
-      remove.addEventListener("click", (event) => {
+      const del = h("button", { class: "conv-del", title: "删除会话" }, "×");
+        del.setAttribute("aria-label", "删除会话");
+      del.addEventListener("click", (event) => {
         event.stopPropagation();
         void deleteConversation(conv);
       });
-      row.append(item, remove);
+      row.append(del);
       sidebar.conversations.append(row);
     }
   }
 }
 
-/* ------------------------------------------------------------------ 对话区 */
+/* ------------------------------------------------------------------ 对话视图 */
 
-/** 一条工具调用对应的 DOM。实时面板和历史回看共用。 */
-function toolRow(tool: ToolCallView): HTMLElement {
-  const li = h("li", { class: tool.ok ? "tool" : "tool failed" });
-  const head = h("div", { class: "tool-head" });
-  head.append(h("code", { class: "tool-name" }, tool.tool));
-  if (tool.source) {
-    head.append(h("span", { class: "tool-source", title: `来自 MCP server：${tool.mcpServer}` },
-      tool.source));
-  }
-  if (tool.exitCode !== undefined) {
-    head.append(
-      h("span", { class: `tool-exit ${tool.ok ? "ok" : "error"}` },
-        tool.exitCode === 0 ? "exit 0" : `exit ${tool.exitCode}`),
-    );
-  }
-  li.append(head);
-  if (tool.summary) {
-    const cmd = h("pre", { class: "tool-command" }, tool.summary);
-    cmd.title = tool.summary;
-    li.append(cmd);
-  }
-  if (tool.output) li.append(h("pre", { class: "tool-output" }, tool.output));
-  return li;
+function thoughtBlock(thought: ThoughtView): HTMLElement {
+  const block = h("div", { class: "thought-step" });
+  block.append(h("div", { class: "thought-step-label" }, `第 ${thought.step} 步`));
+  block.append(h("pre", { class: "thought-text" }, `${thought.text}\n`));
+  return block;
 }
 
-/** 一条原始事件对应的 DOM。 */
-function eventRow(ev: AgentEvent): HTMLElement {
-  const d = describeEvent(ev);
-  const row = h("div", { class: `event tone-${d.tone}` });
-  row.append(h("span", { class: "event-label" }, d.label));
-  row.append(h("span", { class: "event-detail" }, d.detail));
-  return row;
+function renderThoughts(turn: Turn): HTMLElement | null {
+  if (!turn.thoughts || turn.thoughts.length === 0) return null;
+  const steps = turn.thoughts.map((t) => t.step).join("、");
+  return detailsBlock(`${turn.runId}:thoughts`, "thoughts", `思考：第 ${steps} 步`, () => {
+    const list = h("div", { class: "thought-list" });
+    for (const thought of turn.thoughts) list.append(thoughtBlock(thought));
+    return list;
+  }, true);
 }
 
 function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
@@ -292,30 +272,7 @@ function renderPlan(turn: Turn, defaultOpen: boolean): HTMLElement | null {
   }, defaultOpen);
 }
 
-
-function thoughtBlock(thought: ThoughtView): HTMLElement {
-  const block = h("div", { class: "thought-step" });
-  block.append(h("div", { class: "thought-step-label" }, `第 ${thought.step} 步`));
-  block.append(h("pre", { class: "thought-text" }, `${thought.text}\n`));
-  return block;
-}
-
-function renderThoughts(turn: Turn, defaultOpen: boolean): HTMLElement | null {
-  if (!turn.thoughts || turn.thoughts.length === 0) return null;
-  const steps = turn.thoughts.map((t) => t.step).join("、");
-  return detailsBlock(`${turn.runId}:thoughts`, "thoughts", `思考：第 ${steps} 步`, () => {
-    const list = h("div", { class: "thought-list" });
-    for (const thought of turn.thoughts) list.append(thoughtBlock(thought));
-    return list;
-  }, defaultOpen);
-}
-
-/** 气泡：用户消息 + 计划 + 用量 + 结果。思考/看板/原始事件都在右栏。 */
-function renderTurn(
-  turn: Turn,
-  live: boolean,
-  defaultOpen = false,
-): HTMLElement {
+function renderTurn(turn: Turn, live = false): HTMLElement {
   const wrap = h("div", { class: `turn${live ? " live" : ""}` });
 
   const user = h("div", { class: "msg user" });
@@ -327,10 +284,10 @@ function renderTurn(
   assistant.append(h("div", { class: "avatar" }, "m"));
   const bubble = h("div", { class: "bubble" });
 
-  const plan = renderPlan(turn, defaultOpen);
+  const plan = renderPlan(turn, false);
   if (plan) bubble.append(plan);
 
-  const thoughts = renderThoughts(turn, true); // 思考默认展开：每次模型返回的 thinking 都要能看到
+  const thoughts = renderThoughts(turn);
   if (thoughts) bubble.append(thoughts);
 
   if (turn.usage.steps > 0) {
@@ -345,7 +302,7 @@ function renderTurn(
     answerNode.append(renderMarkdown(turn.answer));
     bubble.append(answerNode);
   } else if (!turn.ok && turn.status === "error") {
-    bubble.append(h("div", { class: "answer error" }, "执行失败（详情见右侧面板）"));
+    bubble.append(h("div", { class: "answer error" }, "执行失败（切换到「轨迹」查看原始信息）"));
   } else if (!turn.ok && turn.status === "done") {
     const text = turn.stopReason === "cancelled"
       ? "已取消"
@@ -358,168 +315,237 @@ function renderTurn(
   return wrap;
 }
 
-/* ------------------------------------------------------------------ 右侧详情面板 */
+/* ------------------------------------------------------------------ 轨迹视图（原始信息不省略） */
 
-const panel = {
-  root: el<HTMLElement>("inspector"),
-  appRoot: el<HTMLElement>("appRoot"),
-  toggle: el<HTMLButtonElement>("toggleInspector"),
-  close: el<HTMLButtonElement>("closeInspector"),
-  thinkSection: el<HTMLDetailsElement>("thinkSection"),
-  thinkList: el<HTMLUListElement>("thinkList"),
-  thinkMeta: el<HTMLElement>("thinkMeta"),
-  boardSection: el<HTMLDetailsElement>("boardSection"),
-  boardBody: el<HTMLElement>("boardBody"),
-  boardMeta: el<HTMLElement>("boardMeta"),
-  memorySection: el<HTMLDetailsElement>("memorySection"),
-  memoryList: el<HTMLElement>("memoryList"),
-  memoryMeta: el<HTMLElement>("memoryMeta"),
-  rawSection: el<HTMLDetailsElement>("rawSection"),
-  rawList: el<HTMLElement>("rawList"),
-  rawMeta: el<HTMLElement>("rawMeta"),
-};
-
-/** 每个 run 的任务看板只拉一次（历史回看时反复切会话不必重复请求）。 */
-const boardCache = new Map<string, { enabled: boolean; tasks: TaskItem[]; progress: { done: number; total: number } } | null>();
-
-function renderBoardInto(
-  data: { enabled: boolean; tasks: TaskItem[]; progress: { done: number; total: number } } | null,
-): void {
-  const body = panel.boardBody;
-  body.replaceChildren();
-  panel.boardMeta.textContent = "";
-  if (!data) {
-    body.append(h("p", { class: "muted" }, "任务看板加载失败"));
-    return;
-  }
-  if (!data.enabled || data.tasks.length === 0) {
-    body.append(h("p", { class: "muted" }, "本轮未启用任务图"));
-    return;
-  }
-  const board = buildTaskBoard(data.tasks);
-  panel.boardMeta.textContent =
-    `${data.progress.done}/${data.progress.total} 完成 · 可开工 ${board.ready.length}`;
-  body.append(
-    h("div", { class: "board-meta muted" },
-      `阻塞 ${board.blocked.length} · 进行中 ${board.inProgress.length}`),
-  );
-  const grid = h("div", { class: "board-grid" });
-  for (const task of data.tasks) {
-    const card = h("div", { class: `task-card status-${task.status}` });
-    card.append(h("code", { class: "task-id" }, task.id.replace("task_", "")));
-    card.append(h("span", { class: "task-subject" }, task.subject));
-    const waiting = (task.blockedBy ?? []).filter((dep) => {
-      const found = data.tasks.find((x) => x.id === dep);
-      return !found || found.status !== "completed";
-    });
-    card.append(
-      h("span", { class: "task-meta muted" },
-        [task.status, task.owner ? `owner ${task.owner}` : "",
-         waiting.length ? `等 ${waiting.map((w) => w.replace("task_", "")).join(",")}` : ""]
-          .filter(Boolean).join(" · ")),
-    );
-    grid.append(card);
-  }
-  body.append(grid);
-}
-
-async function loadBoard(runId: string): Promise<void> {
-  if (boardCache.has(runId)) {
-    renderBoardInto(boardCache.get(runId) ?? null);
-    return;
-  }
-  panel.boardBody.replaceChildren(h("p", { class: "muted" }, "加载中…"));
+function prettyJson(value: unknown): string {
   try {
-    const data = await api.runTasks(runId);
-    boardCache.set(runId, data);
-    renderBoardInto(data);
+    const text = JSON.stringify(value, null, 2);
+    return text ?? String(value);
   } catch {
-    boardCache.set(runId, null);
-    renderBoardInto(null);
+    return String(value);
   }
 }
 
-function panelTools(turn: Turn): ToolCallView[] {
-  return turn.tools;
+function textOf(ev: AgentEvent, key: string): string {
+  const data = (ev.data ?? {}) as Record<string, unknown>;
+  return typeof data[key] === "string" ? (data[key] as string) : "";
 }
 
-/** 把右栏刷新成"某一轮"的详情。run 结束、切会话、新会话都会调它。 */
-function renderInspector(turn: Turn | null, events: AgentEvent[]): void {
-  if (!turn) {
-    panel.thinkList.replaceChildren(h("li", { class: "muted" }, "暂无工具调用"));
-    panel.thinkMeta.textContent = "";
-    panel.rawList.replaceChildren();
-    panel.rawMeta.textContent = "";
-    renderBoardInto(null);
-    panel.boardBody.replaceChildren(h("p", { class: "muted" }, "本轮未启用任务图"));
-    void renderMemory(undefined, false);
-    return;
-  }
-
-  const tools = panelTools(turn);
-  panel.thinkList.replaceChildren();
-  if (tools.length === 0) {
-    panel.thinkList.append(h("li", { class: "muted" }, "本轮无工具调用"));
-  } else {
-    for (const tool of tools) panel.thinkList.append(toolRow(tool));
-  }
-  const failed = tools.filter((t) => !t.ok).length;
-  panel.thinkMeta.textContent =
-    `共 ${tools.length} 次` +
-    (failed ? ` · 失败 ${failed}` : "") +
-    (turn.denied ? ` · 已拒绝 ${turn.denied}` : "");
-
-  const merged = mergeDeltaEvents(events);
-  panel.rawList.replaceChildren();
-  for (const ev of merged) panel.rawList.append(eventRow(ev));
-  panel.rawMeta.textContent = `${merged.length} 条`;
-
-  void loadBoard(turn.runId);
-  const run = runs.find((r) => r.id === turn.runId);
-  void renderMemory(run?.workspace, run?.memory === true);
+function numOf(ev: AgentEvent, key: string): number | undefined {
+  const data = (ev.data ?? {}) as Record<string, unknown>;
+  return typeof data[key] === "number" ? (data[key] as number) : undefined;
 }
 
-/** 右栏的"记忆"分区：显示这个工作区里存下的长期笔记。 */
-async function renderMemory(workspace: string | undefined, enabled: boolean): Promise<void> {
-  const box = panel.memoryList;
-  panel.memoryMeta.textContent = "";
-  if (!enabled) {
-    box.replaceChildren(h("p", { class: "muted" }, "这一轮没有启用记忆"));
-    return;
-  }
-  if (!workspace) {
-    box.replaceChildren(h("p", { class: "muted" }, "没有工作区信息"));
-    return;
-  }
-  box.replaceChildren(h("p", { class: "muted" }, "加载中…"));
-  try {
-    const data = await api.memory(workspace);
-    if (data.entries.length === 0) {
-      box.replaceChildren(h("p", { class: "muted" }, "还没有记忆（让它在对话里记住点什么）"));
-      panel.memoryMeta.textContent = "0 条";
-      return;
+function stepOf(ev: AgentEvent): number | null {
+  const step = numOf(ev, "step");
+  return step === undefined ? null : step;
+}
+
+interface StepGroup {
+  step: number | null;
+  events: AgentEvent[];
+}
+
+/** 按 data.step 分组，保持事件原始顺序。没有 step 的（start/mcp_ready）单独一组。 */
+function groupEventsByStep(events: AgentEvent[]): StepGroup[] {
+  const groups: StepGroup[] = [];
+  const index = new Map<number | null, StepGroup>();
+  for (const ev of events) {
+    const step = stepOf(ev);
+    let group = index.get(step);
+    if (!group) {
+      group = { step, events: [] };
+      index.set(step, group);
+      groups.push(group);
     }
-    panel.memoryMeta.textContent = `${data.total} 条`;
-    const list = h("ul", { class: "memory-items" });
-    for (const entry of data.entries) {
-      const li = h("li", { class: "memory-item" });
-      li.append(h("span", { class: "memory-text" }, entry.text));
-      if (entry.tags.length) {
-        li.append(h("span", { class: "memory-tags muted" }, entry.tags.join(" · ")));
+    group.events.push(ev);
+  }
+  return groups;
+}
+
+function rawPre(text: string, cls = ""): HTMLElement {
+  return h("pre", { class: `traj-pre ${cls}`.trim() }, text);
+}
+
+function renderTrajectoryItem(ev: AgentEvent): HTMLElement | null {
+  const data = (ev.data ?? {}) as Record<string, unknown>;
+  switch (ev.kind) {
+    case "assistant_delta":
+      return null; // 由调用方合并成一段"模型输出"
+    case "thinking": {
+      const item = h("div", { class: "traj-item thought" });
+      item.append(h("div", { class: "traj-label" }, `thinking · 第 ${numOf(ev, "step") ?? "?"} 步`));
+      item.append(rawPre(textOf(ev, "text"), "thinking-text"));
+      return item;
+    }
+    case "model_call": {
+      const usage = (data.usage ?? {}) as Record<string, unknown>;
+      const item = h("div", { class: "traj-item model" });
+      item.append(h("div", { class: "traj-label" }, "模型调用"));
+      item.append(h("div", { class: "traj-line" },
+        `stop_reason=${String(data.stop_reason ?? "?")} · 入 ${usage.input_tokens ?? 0} / 出 ${usage.output_tokens ?? 0} · 工具调用 ${data.tool_calls ?? 0} 个`));
+      return item;
+    }
+    case "tool_call": {
+      const item = h("div", { class: "traj-item tool" });
+      const head = h("div", { class: "traj-tool-head" });
+      head.append(h("span", { class: "traj-tool-name" }, String(data.tool ?? "?")));
+      if (typeof data.exit_code === "number") {
+        head.append(h("span", { class: `traj-exit ${data.failed === true ? "bad" : "ok"}` },
+          data.failed === true ? `exit ${data.exit_code}` : "exit 0"));
       }
-      list.append(li);
+      item.append(head);
+      if (data.args !== undefined) {
+        item.append(h("div", { class: "traj-label" }, "参数"));
+        item.append(rawPre(prettyJson(data.args), "json"));
+      }
+      item.append(h("div", { class: "traj-label" }, "输出（完整）"));
+      item.append(rawPre(typeof data.output === "string" ? data.output : "(无输出)", "output"));
+      if (data.meta && Object.keys(data.meta as Record<string, unknown>).length > 0) {
+        item.append(h("div", { class: "traj-label" }, "meta"));
+        item.append(rawPre(prettyJson(data.meta), "json"));
+      }
+      return item;
     }
-    box.replaceChildren(list);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    box.replaceChildren(h("p", { class: "muted" }, `记忆加载失败：${message}`));
+    case "denied": {
+      const item = h("div", { class: "traj-item denied" });
+      item.append(h("div", { class: "traj-label" }, "权限拒绝"));
+      item.append(h("div", { class: "traj-line" },
+        `${String(data.reason ?? "?")}${data.detail ? ` · ${String(data.detail)}` : ""} · ${String(data.by ?? "")}`));
+      if (data.args !== undefined) item.append(rawPre(prettyJson(data.args), "json"));
+      return item;
+    }
+    case "hook_error": {
+      const item = h("div", { class: "traj-item hook-error" });
+      item.append(h("div", { class: "traj-label" }, "钩子异常"));
+      item.append(rawPre(prettyJson(data), "json"));
+      return item;
+    }
+    case "compact": {
+      const item = h("div", { class: "traj-item compact" });
+      item.append(h("div", { class: "traj-label" }, "上下文压缩"));
+      item.append(h("div", { class: "traj-line" },
+        `${data.chars_before ?? "?"} → ${data.chars_after ?? "?"} 字符（省 ${Math.round(Number(data.saved_ratio ?? 0) * 100)}%）；落盘 ${data.persisted ?? 0}、截断 ${data.trimmed ?? 0}、删整对 ${data.snipped_messages ?? 0}`));
+      return item;
+    }
+    case "finish": {
+      const item = h("div", { class: "traj-item finish" });
+      item.append(h("div", { class: "traj-label" }, "结束"));
+      item.append(h("div", { class: "traj-line" },
+        `ok=${String(data.ok ?? "?")} · reason=${String(data.reason ?? "?")}`));
+      return item;
+    }
+    case "unknown_tool": {
+      const item = h("div", { class: "traj-item denied" });
+      item.append(h("div", { class: "traj-label" }, "未知工具"));
+      item.append(h("div", { class: "traj-line" }, String(data.tool ?? "?")));
+      return item;
+    }
+    default: {
+      const described = describeEvent(ev);
+      const item = h("div", { class: "traj-item other" });
+      item.append(h("div", { class: "traj-label" }, described.label));
+      item.append(h("div", { class: "traj-line" }, described.detail));
+      item.append(rawPre(prettyJson(data), "json"));
+      return item;
+    }
   }
 }
 
-/* ------------------------------------------------------------------ 实时增量渲染
+function renderTrajectoryStep(runId: string, group: StepGroup): HTMLElement {
+  const title = group.step === null ? "轮次开始" : `第 ${group.step} 步`;
+  const tools = group.events.filter((e) => e.kind === "tool_call").length;
+  const thoughts = group.events.filter((e) => e.kind === "thinking").length;
+  const pieces = [
+    `${group.events.length} 条事件`,
+    thoughts ? `${thoughts} 段思考` : "",
+    tools ? `${tools} 次工具` : "",
+  ].filter(Boolean).join(" · ");
 
-事件来了只往右栏和结果区追加，不重建整个对话区。
-*/
+  return detailsBlock(
+    `traj:${runId}:${group.step ?? "start"}`,
+    "traj-step",
+    `${title} · ${pieces}`,
+    () => {
+      const body = h("div", { class: "traj-step-body" });
+      let answerText = "";
+      const flushAnswer = () => {
+        if (!answerText) return;
+        const item = h("div", { class: "traj-item answer-raw" });
+        item.append(h("div", { class: "traj-label" }, "模型输出（流式片段合并）"));
+        item.append(rawPre(answerText, "answer-text"));
+        body.append(item);
+        answerText = "";
+      };
+      for (const ev of group.events) {
+        if (ev.kind === "assistant_delta") {
+          answerText += textOf(ev, "text");
+          continue;
+        }
+        const item = renderTrajectoryItem(ev);
+        if (item) body.append(item);
+      }
+      flushAnswer();
+      body.append(detailsBlock(
+        `traj:${runId}:${group.step ?? "start"}:json`,
+        "traj-raw-json",
+        `原始事件 JSON（${group.events.length} 条，不省略）`,
+        () => rawPre(prettyJson(group.events), "json"),
+        false,
+      ));
+      return body;
+    },
+    true,
+  );
+}
+
+function renderTrajectoryRun(run: RunRow, index: number): HTMLElement {
+  const events = run.events ?? [];
+  const usage = summarizeUsage(events);
+  const section = h("section", { class: "traj-run" });
+
+  const head = h("div", { class: "traj-run-head" });
+  head.append(h("span", { class: "traj-run-index" }, `第 ${index + 1} 轮`));
+  head.append(h("span", { class: "traj-run-task" }, run.task));
+  const result = (run.result ?? {}) as Record<string, unknown>;
+  const runStatus = run.status ?? "queued";
+  const status = runStatus === "done" && result.ok === false ? "未完成" : runStatus;
+  head.append(h("span", { class: `traj-run-status tone-${statusTone(runStatus)}` }, status));
+  head.append(h("span", { class: "traj-run-meta muted" }, formatUsage(usage)));
+  section.append(head);
+
+  for (const group of groupEventsByStep(events)) {
+    section.append(renderTrajectoryStep(run.id, group));
+  }
+
+  if (run.error) {
+    section.append(h("div", { class: "traj-result error" }, `错误：${run.error}`));
+  } else if (typeof result.final_text === "string" && result.final_text) {
+    const box = h("div", { class: "traj-result" });
+    box.append(h("div", { class: "traj-label" }, "最终结果"));
+    const markdown = h("div", { class: "answer markdown" });
+    markdown.append(renderMarkdown(result.final_text));
+    box.append(markdown);
+    section.append(box);
+  }
+  return section;
+}
+
+function renderTrajectory(): void {
+  main.chat.className = "chat trajectory";
+  const scrollTop = main.chat.scrollTop;
+  main.chat.replaceChildren();
+  if (runs.length === 0) {
+    main.chat.append(h("div", { class: "empty" },
+      h("p", { class: "empty-title" }, "还没有运行记录"),
+      h("p", { class: "muted" }, "在下方输入任务，或从左侧选择历史会话。")));
+    return;
+  }
+  runs.forEach((run, index) => main.chat.append(renderTrajectoryRun(run, index)));
+  main.chat.scrollTop = scrollTop;
+}
+
+/* ------------------------------------------------------------------ 实时增量渲染（对话视图） */
 
 interface LiveView {
   runId: string;
@@ -528,36 +554,19 @@ interface LiveView {
   thoughts: ThoughtView[];
   usageEl: HTMLElement;
   answerEl: HTMLElement;
-  toolCount: number;
-  denied: number;
-  rawRows: number;
   deltaText: string;
-  deltaRow: HTMLElement | null;
-  deltaDetail: HTMLElement | null;
 }
 
 let liveView: LiveView | null = null;
 
 function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
-  const wrap = h("div", { class: "turn live" });
-
-  const user = h("div", { class: "msg user" });
-  user.append(h("div", { class: "avatar" }, "你"));
-  user.append(h("div", { class: "bubble" }, turn.task));
-  wrap.append(user);
-
-  const assistant = h("div", { class: "msg assistant" });
-  assistant.append(h("div", { class: "avatar" }, "m"));
-  const bubble = h("div", { class: "bubble" });
-
+  const wrap = renderTurn(turn, true);
+  const bubble = wrap.querySelector(".bubble") as HTMLElement;
   const planHost = h("div", { class: "plan-host" });
   const thoughtsHost = h("div", { class: "thoughts-host" });
   const usageEl = h("div", { class: "turn-usage muted" });
   const answerEl = h("div", { class: "answer streaming markdown" });
-  bubble.append(planHost, thoughtsHost, usageEl, answerEl);
-
-  assistant.append(bubble);
-  wrap.append(assistant);
+  bubble.replaceChildren(planHost, thoughtsHost, usageEl, answerEl);
 
   const view: LiveView = {
     runId: turn.runId,
@@ -566,12 +575,7 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
     thoughts: [],
     usageEl,
     answerEl,
-    toolCount: 0,
-    denied: 0,
-    rawRows: 0,
     deltaText: "",
-    deltaRow: null,
-    deltaDetail: null,
   };
   return { el: wrap, view };
 }
@@ -582,17 +586,6 @@ function renderLiveAnswer(view: LiveView): void {
   view.answerEl.replaceChildren(frag);
 }
 
-function updateThinkMeta(view: LiveView): void {
-  panel.thinkMeta.textContent =
-    `共 ${view.toolCount} 次` + (view.denied ? ` · 已拒绝 ${view.denied}` : "");
-}
-
-function appendRawRow(view: LiveView, ev: AgentEvent): void {
-  panel.rawList.append(eventRow(ev));
-  view.rawRows += 1;
-  panel.rawMeta.textContent = `${view.rawRows} 条`;
-}
-
 function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   if (!plan || plan.length === 0) return;
   const done = plan.filter((x) => x.status === "completed").length;
@@ -600,9 +593,8 @@ function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   let list: HTMLOListElement;
   if (!detail) {
     detail = h("details", { class: "plan" });
-    const summary = h("summary");
     list = h("ol", { class: "plan-list" });
-    detail.append(summary, list);
+    detail.append(h("summary"), list);
     view.planHost.append(detail);
   } else {
     list = detail.querySelector("ol.plan-list") as HTMLOListElement;
@@ -613,99 +605,52 @@ function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   for (const item of plan) {
     const li = h("li", { class: `plan-item status-${item.status}` });
     li.textContent = item.content;
-    if (item.blockedBy?.length) {
-      li.append(h("span", { class: "blocked-by" }, `等待 ${item.blockedBy.join(",")}`));
-    }
     list.append(li);
   }
 }
 
-
 function renderLiveThoughts(view: LiveView): void {
   if (view.thoughts.length === 0) return;
   const steps = view.thoughts.map((t) => t.step).join("、");
-  const node = detailsBlock(
-    `${view.runId}:thoughts`,
-    "thoughts",
-    `思考：第 ${steps} 步`,
-    () => {
-      const list = h("div", { class: "thought-list" });
-      for (const thought of view.thoughts) list.append(thoughtBlock(thought));
-      return list;
-    },
-    true,
-  );
+  const node = detailsBlock(`${view.runId}:thoughts`, "thoughts", `思考：第 ${steps} 步`, () => {
+    const list = h("div", { class: "thought-list" });
+    for (const thought of view.thoughts) list.append(thoughtBlock(thought));
+    return list;
+  }, true);
   view.thoughtsHost.replaceChildren(node);
 }
 
-function applyLiveEvent(ev: AgentEvent, silent = false): void {
+function applyLiveEvent(ev: AgentEvent): void {
   const view = liveView;
   if (!view) return;
-
   if (ev.kind === "assistant_delta") {
-    const chunk = String(((ev.data ?? {}) as Record<string, unknown>).text ?? "");
-    view.deltaText += chunk;
+    view.deltaText += textOf(ev, "text");
     renderLiveAnswer(view);
-    if (!view.deltaRow) {
-      view.deltaRow = h("div", { class: "event tone-info" });
-      view.deltaRow.append(h("span", { class: "event-label" }, "模型输出"));
-      view.deltaDetail = h("span", { class: "event-detail" }, view.deltaText.slice(0, 60));
-      view.deltaRow.append(view.deltaDetail);
-      panel.rawList.append(view.deltaRow);
-      view.rawRows += 1;
-      panel.rawMeta.textContent = `${view.rawRows} 条`;
-    } else if (view.deltaDetail) {
-      view.deltaDetail.textContent = view.deltaText.slice(0, 60);
-    }
   } else if (ev.kind === "thinking") {
-    const d = (ev.data ?? {}) as Record<string, unknown>;
-    const text = typeof d.text === "string" ? d.text : "";
+    const text = textOf(ev, "text");
     if (text.trim()) {
-      view.thoughts.push({
-        step: typeof d.step === "number" ? d.step : 0,
-        text,
-      });
+      view.thoughts.push({ step: numOf(ev, "step") ?? 0, text });
       renderLiveThoughts(view);
     }
-    appendRawRow(view, ev);
   } else if (ev.kind === "tool_call") {
-    view.toolCount += 1;
-    // 第一次有工具调用时把"暂无工具调用"的提示去掉
-    if (view.toolCount === 1) panel.thinkList.replaceChildren();
-    panel.thinkList.append(toolRow(describeToolCall(ev)));
-    updateThinkMeta(view);
-    if (!silent) renderLivePlan(view, latestPlan(liveEvents));
-    appendRawRow(view, ev);
-  } else if (ev.kind === "denied") {
-    view.denied += 1;
-    updateThinkMeta(view);
-    appendRawRow(view, ev);
-  } else {
-    appendRawRow(view, ev);
+    renderLivePlan(view, latestPlan(liveEvents));
   }
-
   view.usageEl.textContent = formatUsage(summarizeUsage(liveEvents));
-  if (!silent) {
-    updateTopbarUsage();
-    scrollToBottomIfNearBottom();
-  }
-}
-
-/** 从历史/刷新恢复：把已有事件灌进右栏（不滚屏、不改顶栏）。 */
-function replayIntoLiveView(events: AgentEvent[], plan: PlanItem[] | null = null): void {
-  panel.thinkList.replaceChildren(h("li", { class: "muted" }, "暂无工具调用"));
-  panel.rawList.replaceChildren();
-  const live = liveView as LiveView | null;
-  if (live) {
-    live.thoughts = [];
-    live.thoughtsHost.replaceChildren();
-  }
-  for (const ev of events) applyLiveEvent(ev, true);
-  if (plan) renderLivePlan(liveView as LiveView, plan);
   updateTopbarUsage();
+  scrollToBottomIfNearBottom();
 }
 
-/** 顶栏总用量：历史各轮 + 正在跑的这一轮。 */
+function replayIntoLiveView(events: AgentEvent[], plan: PlanItem[] | null): void {
+  const live = liveView as LiveView | null;
+  if (!live) return;
+  live.thoughts = [];
+  live.thoughtsHost.replaceChildren();
+  for (const ev of events) applyLiveEvent(ev);
+  if (plan) renderLivePlan(live, plan);
+}
+
+/* ------------------------------------------------------------------ 渲染入口 */
+
 function updateTopbarUsage(): void {
   const zero = {
     steps: 0, inputTokens: 0, outputTokens: 0, toolCalls: 0,
@@ -721,58 +666,60 @@ function updateTopbarUsage(): void {
   main.usage.textContent = total.steps ? formatUsage(total) : "";
 }
 
-function renderChat(): void {
-  renderQueued = false;
-  const turns = buildTurns(runs);
-  main.chat.replaceChildren();
-  liveView = null;
-  const hasContent = turns.length > 0 || liveRun !== null;
-  if (hasContent) {
-    main.empty.hidden = true;
-    turns.forEach((turn) => {
-      const isLive = liveRun?.id === turn.runId;
-      if (isLive) {
-        const { el, view } = buildLiveTurn(turn);
-        liveView = view;
-        replayIntoLiveView(liveEvents, turn.plan);
-        main.chat.append(el);
-        return;
-      }
-      main.chat.append(renderTurn(turn, false, false));
-    });
-    // 右栏显示"最后一轮"的详情；正在跑时由增量事件接管
-    const last = turns[turns.length - 1];
-    if (!liveView && last) {
-      const lastRun = runs.find((r) => r.id === last.runId);
-      renderInspector(last, lastRun?.events ?? []);
-    }
-  } else {
-    main.empty.hidden = false;
-    main.chat.append(main.empty);
-    renderInspector(null, []);
-  }
+function renderViewTabs(): void {
+  main.viewChat.classList.toggle("active", viewMode === "chat");
+  main.viewTrajectory.classList.toggle("active", viewMode === "trajectory");
+  main.viewChat.setAttribute("aria-selected", String(viewMode === "chat"));
+  main.viewTrajectory.setAttribute("aria-selected", String(viewMode === "trajectory"));
+}
 
-  // 顶栏
+function setView(mode: ViewMode): void {
+  viewMode = mode;
+  remember(VIEW_KEY, mode);
+  render();
+}
+
+function renderChrome(): void {
   const conv = currentConversation();
   main.title.textContent = conv ? shortTitle(conv.title, 40) : "新会话";
-  updateTopbarUsage();
-
   const busy = isBusy();
   main.submit.disabled = busy;
   main.submit.textContent = busy ? "执行中…" : (runs.length > 0 ? "继续对话" : "发送");
   main.resume.hidden = !latestRunResumable();
   main.cancel.hidden = !busy;
-  // 徽章必须跟着 busy 一起复位，否则跑完之后还挂着"运行中…"
   main.status.hidden = !busy;
   if (busy) main.status.textContent = "执行中…";
+}
 
+function renderChat(): void {
+  main.chat.className = "chat";
+  const turns = buildTurns(runs);
+  main.chat.replaceChildren();
+  liveView = null;
+  const hasContent = turns.length > 0 || liveRun !== null;
+  if (!hasContent) {
+    main.empty.hidden = false;
+    main.chat.append(main.empty);
+    return;
+  }
+  main.empty.hidden = true;
+  for (const turn of turns) {
+    const isLive = liveRun?.id === turn.runId;
+    if (isLive) {
+      const { el, view } = buildLiveTurn(turn);
+      liveView = view;
+      replayIntoLiveView(liveEvents, turn.plan);
+      main.chat.append(el);
+      continue;
+    }
+    main.chat.append(renderTurn(turn));
+  }
   scrollToBottom();
 }
 
 function latestRunResumable(): boolean {
   const last = runs[runs.length - 1];
   if (!last) return false;
-  // 出错（provider 挂了等）同样可以从检查点续跑
   if (last.status === "error") return true;
   if (last.status !== "done") return false;
   const ok = (last.result as Record<string, unknown> | null | undefined)?.ok;
@@ -784,8 +731,12 @@ function render(): void {
   renderQueued = true;
   window.requestAnimationFrame(() => {
     renderQueued = false;
-    renderChat();
+    renderViewTabs();
+    renderChrome();
+    updateTopbarUsage();
     renderConversations();
+    if (viewMode === "chat") renderChat();
+    else renderTrajectory();
   });
 }
 
@@ -793,11 +744,10 @@ function scrollToBottom(): void {
   main.chat.scrollTop = main.chat.scrollHeight;
 }
 
-/** 只有用户本来就在底部时才自动跟随，免得他往回翻看的时候被拽走。 */
 function scrollToBottomIfNearBottom(): void {
-  const el = main.chat;
-  const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-  if (near) el.scrollTop = el.scrollHeight;
+  const elNode = main.chat;
+  const near = elNode.scrollHeight - elNode.scrollTop - elNode.clientHeight < 120;
+  if (near) elNode.scrollTop = elNode.scrollHeight;
 }
 
 /* ------------------------------------------------------------------ 数据加载 */
@@ -827,7 +777,6 @@ let conversationGeneration = 0;
 function setHash(rootId: string): void {
   const next = rootId ? `#/c/${rootId}` : "#/";
   if (window.location.hash !== next) {
-    // replaceState：不往历史里塞一堆条目，但地址栏能复制分享
     window.history.replaceState(null, "", next);
   }
 }
@@ -844,20 +793,17 @@ async function openConversation(rootId: string, opts: { silent?: boolean } = {})
 
   const conv = conversations.find((c) => c.root_id === rootId);
   if (!conv) {
-    // 新会话：还没有 run
     runs = [];
     render();
     return;
   }
 
   if (!opts.silent) setStatus("正在加载会话…");
-  // 并发拉：串行 await 在长会话里很慢，而且慢的那个晚到会覆盖后点的那个
   const settled = await Promise.all(
     conv.run_ids.map((runId) => api.runWithEvents(runId).catch(() => null)),
   );
-  if (gen !== conversationGeneration) return;   // 用户已经切走了，别覆盖
-  const loaded = settled.filter((r): r is RunRow => r !== null);
-  runs = loaded;
+  if (gen !== conversationGeneration) return;
+  runs = settled.filter((r): r is RunRow => r !== null);
   render();
 
   const last = runs[runs.length - 1];
@@ -872,12 +818,9 @@ async function openConversation(rootId: string, opts: { silent?: boolean } = {})
 function attachStream(run: RunRow): void {
   closeStream?.();
   liveRun = run;
-  // 关键：这里必须清空。后端 SSE 每次连接都从头重放全部事件，
-  // 如果先把 ?events=true 取回的塞进来，同一批事件就被渲染两遍
-  // （实测：一次 bash 调用显示成两行、usage 翻倍）。
   liveEvents = [];
-  const idx = runs.findIndex((r) => r.id === run.id);
-  if (idx >= 0) runs[idx] = { ...run, events: liveEvents };
+  const index = runs.findIndex((r) => r.id === run.id);
+  if (index >= 0) runs[index] = { ...run, events: liveEvents };
   else runs = [...runs, { ...run, events: liveEvents }];
 
   closeStream = subscribeRun(
@@ -886,8 +829,8 @@ function attachStream(run: RunRow): void {
       liveEvents = [...liveEvents, ev];
       const current = runs.find((r) => r.id === run.id);
       if (current) current.events = liveEvents;
-      // 只更新变化的那一行，不重建整个对话区（rebuild 会让每跳一步都闪一下）
-      applyLiveEvent(ev);
+      if (viewMode === "chat") applyLiveEvent(ev);
+      else render();
     },
     (_kind, ev) => {
       const data = (ev.data ?? {}) as Record<string, unknown>;
@@ -920,8 +863,6 @@ function newChat(): void {
   forget(LAST_CONVERSATION_KEY);
   setHash("");
   main.task.value = "";
-  main.chat.replaceChildren(main.empty);
-  main.empty.hidden = false;
   setStatus("");
   render();
   main.task.focus();
@@ -930,7 +871,6 @@ function newChat(): void {
 let submitting = false;
 
 async function submit(): Promise<void> {
-  // 运行中再提交会新开一个 run 并把事件流抢过来，旧 run 还在后台烧钱
   if (submitting || isBusy()) {
     setStatus("上一轮仍在执行，请稍候", "error");
     return;
@@ -983,12 +923,10 @@ async function submit(): Promise<void> {
       created_at: Date.now() / 1000,
       events: [],
       workspace: workspace || undefined,
-      // 续聊沿用上一轮的开关（服务端也是这么继承的）
       memory: canFollow ? lastRun?.memory : main.optMemory.checked,
     };
-    if (canFollow) {
-      runs = [...runs, row];
-    } else {
+    if (canFollow) runs = [...runs, row];
+    else {
       runs = [row];
       conversationRoot = runId;
     }
@@ -1004,12 +942,10 @@ async function submit(): Promise<void> {
   }
 }
 
-/** 上一轮能不能接着聊：正常完成或出错都算，还在跑的不算。 */
 function canContinue(run: RunRow): boolean {
   return run.status === "done" || run.status === "error";
 }
 
-/** 删除一个会话（连同它的全部 run）。删之前问一次，避免点错。 */
 async function deleteConversation(conv: Conversation): Promise<void> {
   const label = shortTitle(conv.title, 24);
   const turns = conv.turns && conv.turns > 1 ? `（共 ${conv.turns} 轮）` : "";
@@ -1024,7 +960,6 @@ async function deleteConversation(conv: Conversation): Promise<void> {
   }
 
   setStatus("已删除会话");
-  // 删的正是当前打开的那个，就回到空状态；否则只刷新左栏
   if (conversationRoot === conv.root_id) {
     closeStream?.();
     closeStream = null;
@@ -1084,12 +1019,22 @@ function applyToken(value: string): void {
 }
 
 async function init(): Promise<void> {
-  // 先把令牌接上，后面所有请求才会带 Authorization
   const savedToken = recall(TOKEN_KEY);
   if (savedToken) {
     sidebar.token.value = savedToken;
     setAccessToken(savedToken);
   }
+
+  // 视图：URL 参数优先（方便分享/截图），其次本地记忆，默认对话
+  const fromQuery = new URLSearchParams(window.location.search).get("view");
+  const savedView = recall(VIEW_KEY);
+  viewMode = fromQuery === "trajectory" || fromQuery === "raw"
+    ? "trajectory"
+    : fromQuery === "chat"
+      ? "chat"
+      : savedView === "trajectory"
+        ? "trajectory"
+        : "chat";
 
   try {
     const health = await api.health();
@@ -1101,17 +1046,13 @@ async function init(): Promise<void> {
   await loadWorkspaces();
   await loadConversations();
 
-  // 地址栏里的会话优先（可分享、可后退），其次才是上次打开的那个
   const fromHash = (window.location.hash.match(/^#\/c\/([0-9a-zA-Z_-]+)$/) ?? [])[1] ?? "";
   const saved = recall(LAST_CONVERSATION_KEY);
   const target = [fromHash, saved].find(
     (id) => id && conversations.some((c) => c.root_id === id),
   );
-  if (target) {
-    await openConversation(target, { silent: true });
-  } else {
-    render();
-  }
+  if (target) await openConversation(target, { silent: true });
+  else render();
 }
 
 main.submit.addEventListener("click", () => void submit());
@@ -1121,7 +1062,6 @@ main.task.addEventListener("keydown", (e) => {
 sidebar.token.addEventListener("change", () => {
   applyToken(sidebar.token.value);
   setStatus(sidebar.token.value ? "令牌已保存" : "已清除令牌");
-  // 令牌变了，历史会话要用新令牌重新拉
   void loadConversations();
 });
 
@@ -1146,23 +1086,8 @@ for (const example of document.querySelectorAll<HTMLButtonElement>(".example")) 
     main.task.focus();
   });
 }
-
-/* ------------------------------------------------------------------ 右栏开关 */
-
-const INSPECTOR_KEY = "minicode:inspector";
-
-function setInspector(open: boolean): void {
-  panel.appRoot.classList.toggle("inspector-hidden", !open);
-  remember(INSPECTOR_KEY, open ? "1" : "0");
-}
-
-function inspectorOpen(): boolean {
-  return !panel.appRoot.classList.contains("inspector-hidden");
-}
-
-panel.toggle.addEventListener("click", () => setInspector(!inspectorOpen()));
-panel.close.addEventListener("click", () => setInspector(false));
-setInspector(recall(INSPECTOR_KEY) !== "0");   // 默认展开
+main.viewChat.addEventListener("click", () => setView("chat"));
+main.viewTrajectory.addEventListener("click", () => setView("trajectory"));
 
 window.addEventListener("hashchange", () => {
   const id = (window.location.hash.match(/^#\/c\/([0-9a-zA-Z_-]+)$/) ?? [])[1] ?? "";
