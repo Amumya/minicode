@@ -20,6 +20,7 @@ import {
 } from "./api.ts";
 import {
   buildTurns,
+  formatElapsed,
   groupByDay,
   runOutcome,
   shortTitle,
@@ -619,7 +620,6 @@ function renderTrajectory(): void {
 interface LiveView {
   runId: string;
   planHost: HTMLElement;
-  activityEl: HTMLElement;
   usageEl: HTMLElement;
   answerEl: HTMLElement;
   deltaText: string;
@@ -634,15 +634,13 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   // 之前取第一个导致流式输出写进了「你」的气泡，跑完重绘才恢复。
   const bubble = wrap.querySelector(".msg.assistant .bubble") as HTMLElement;
   const planHost = h("div", { class: "plan-host" });
-  const activityEl = h("div", { class: "live-activity muted" }, "运行中 · 等待模型回复…");
   const usageEl = h("div", { class: "turn-usage muted" });
   const answerEl = h("div", { class: "answer streaming markdown" });
-  bubble.replaceChildren(planHost, activityEl, usageEl, answerEl);
+  bubble.replaceChildren(planHost, usageEl, answerEl);
 
   const view: LiveView = {
     runId: turn.runId,
     planHost,
-    activityEl,
     usageEl,
     answerEl,
     deltaText: "",
@@ -668,15 +666,60 @@ function activityText(ev: AgentEvent): string {
   }
 }
 
+let liveFooterEl: HTMLElement | null = null;
+let liveFooterTextEl: HTMLElement | null = null;
+let liveTimerEl: HTMLElement | null = null;
+let liveStartedAt = 0;
+let liveTimerHandle: number | null = null;
+
 function updateLiveBadge(text: string): void {
   if (!text) return;
   liveStatusText = text;
   main.status.hidden = false;
-  main.status.textContent = text;
+  main.status.textContent = liveTimerEl
+    ? `${text} · ${formatElapsed(Date.now() - liveStartedAt)}`
+    : text;
 }
 
-function setLiveActivity(view: LiveView, text: string): void {
-  view.activityEl.textContent = text;
+function setLiveActivity(text: string): void {
+  if (!text) return;
+  liveStatusText = text;
+  if (liveFooterTextEl) liveFooterTextEl.textContent = `运行中 · ${text}`;
+  main.status.hidden = false;
+  main.status.textContent = `${text} · ${formatElapsed(Date.now() - liveStartedAt)}`;
+}
+
+function tickLiveTimer(): void {
+  if (!liveRun) return;
+  const elapsed = formatElapsed(Date.now() - liveStartedAt);
+  if (liveTimerEl) liveTimerEl.textContent = elapsed;
+  if (liveStatusText) main.status.textContent = `${liveStatusText} · ${elapsed}`;
+}
+
+function ensureLiveFooter(): void {
+  if (liveFooterEl) return;
+  liveFooterEl = h("div", { class: "live-footer" });
+  liveFooterTextEl = h("span", { class: "live-footer-text" },
+    liveStatusText ? `运行中 · ${liveStatusText}` : "运行中 · 等待模型回复…");
+  liveTimerEl = h("span", { class: "live-timer" }, "00:00");
+  liveFooterEl.append(liveFooterTextEl, liveTimerEl);
+}
+
+function startLiveTimer(): void {
+  if (liveTimerHandle !== null) return;
+  tickLiveTimer();
+  liveTimerHandle = window.setInterval(tickLiveTimer, 1000);
+}
+
+function stopLiveTimer(): void {
+  if (liveTimerHandle !== null) {
+    window.clearInterval(liveTimerHandle);
+    liveTimerHandle = null;
+  }
+  liveStartedAt = 0;
+  liveFooterEl = null;
+  liveFooterTextEl = null;
+  liveTimerEl = null;
 }
 
 function renderLiveAnswer(view: LiveView): void {
@@ -723,10 +766,7 @@ function applyLiveEvent(ev: AgentEvent): void {
     renderLivePlan(view, latestPlan(liveEvents));
   }
   const activity = activityText(ev);
-  if (activity) {
-    setLiveActivity(view, activity);
-    updateLiveBadge(activity);
-  }
+  if (activity) setLiveActivity(activity);
   view.usageEl.textContent = formatUsage(summarizeUsage(liveEvents));
   updateTopbarUsage();
   scrollToBottomIfNearBottom();
@@ -779,8 +819,12 @@ function renderChrome(): void {
   main.resume.hidden = !latestRunResumable();
   main.cancel.hidden = !busy;
   main.status.hidden = !busy;
-  if (busy) main.status.textContent = liveStatusText || "执行中…";
-  else liveStatusText = "";
+  if (busy) {
+    const elapsed = liveStartedAt ? ` · ${formatElapsed(Date.now() - liveStartedAt)}` : "";
+    main.status.textContent = liveStatusText ? `${liveStatusText}${elapsed}` : "执行中…";
+  } else {
+    liveStatusText = "";
+  }
 }
 
 function renderChat(): void {
@@ -805,6 +849,18 @@ function renderChat(): void {
       continue;
     }
     main.chat.append(renderTurn(turn));
+  }
+  if (liveRun) {
+    if (!liveStartedAt) {
+      liveStartedAt = typeof liveRun.created_at === "number"
+        ? liveRun.created_at * 1000
+        : Date.now();
+    }
+    ensureLiveFooter();
+    if (liveFooterEl) main.chat.append(liveFooterEl);
+    startLiveTimer();
+  } else {
+    stopLiveTimer();
   }
   scrollToBottom();
 }
@@ -912,6 +968,8 @@ function attachStream(run: RunRow): void {
   closeStream?.();
   liveRun = run;
   liveEvents = [];
+  stopLiveTimer();
+  liveStartedAt = typeof run.created_at === "number" ? run.created_at * 1000 : Date.now();
   const index = runs.findIndex((r) => r.id === run.id);
   if (index >= 0) runs[index] = { ...run, events: liveEvents };
   else runs = [...runs, { ...run, events: liveEvents }];
@@ -948,6 +1006,7 @@ function attachStream(run: RunRow): void {
     (_kind, ev) => {
       const data = (ev.data ?? {}) as Record<string, unknown>;
       liveRun = null;
+      stopLiveTimer();
       pendingTrajEvents = [];
       trajFlushScheduled = false;
       const current = runs.find((r) => r.id === run.id);

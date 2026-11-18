@@ -7,6 +7,7 @@ import {
   buildTurns,
   describeToolCall,
   mergeDeltaEvents,
+  formatElapsed,
   groupByDay,
   runOutcome,
   shortTitle,
@@ -247,4 +248,10 @@ test("runOutcome：中断要提示、正好卡上限也要提示、正常结束�
     [start(20), ...steps(2)],
   );
   assert.equal(runOutcome(normal), "ok");
+});
+
+test("formatElapsed 格式：mm:ss，超过一小时带小时", () => {
+  assert.equal(formatElapsed(0), "00:00");
+  assert.equal(formatElapsed(42_000), "00:42");
+  assert.equal(formatElapsed(3_661_000), "1:01:01");
 });

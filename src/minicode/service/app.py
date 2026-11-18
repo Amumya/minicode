@@ -178,6 +178,14 @@ def create_app(
                 )
             return await call_next(request)
 
+    @app.middleware("http")
+    async def _no_store_shell(request: Request, call_next):
+        """index.html 不允许缓存：更新前端后刷新就要拿到新页面骨架。"""
+        response = await call_next(request)
+        if request.url.path in ("/", "/index.html"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
     # 每个 run 一个 asyncio.Event，用来叫醒 SSE 生成器。
     # 放 dict 里是为了让 store 保持纯数据、不掺和异步。
     changed: dict[str, asyncio.Event] = {}

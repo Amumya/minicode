@@ -274,9 +274,13 @@ doc.querySelector("#submit").click();
 await sleep(120);
 const es = sources.at(-1);
 check("提交后订阅了事件流", es?.url === "/runs/run-new/events", es?.url ?? "(无)");
-  check("提交后立刻显示运行中活动行",
-    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("等待模型回复"),
-    doc.querySelector("#chat .live-activity")?.textContent ?? "(无)");
+  check("提交后立刻显示运行中活动行（在会话最后）",
+    (doc.querySelector("#chat .live-footer-text")?.textContent ?? "").includes("等待模型回复") &&
+    doc.querySelector("#chat").lastElementChild?.classList.contains("live-footer") === true,
+    doc.querySelector("#chat .live-footer-text")?.textContent ?? "(无)");
+  check("计时器立刻开始",
+    /^\d{2}:\d{2}$/.test(doc.querySelector("#chat .live-timer")?.textContent ?? ""),
+    doc.querySelector("#chat .live-timer")?.textContent ?? "(无)");
 const sentBody = bodies.get("POST /runs") ?? {};
 check("提交 body 带上了任务和开关",
   sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
@@ -314,9 +318,9 @@ es.emit("tool_call", { kind: "tool_call", ts,
   data: { step: 2, tool: "create_task", args: { subject: "跑测试" }, exit_code: 0, failed: false } });
 await sleep(120);
   check("运行中显示当前步骤和工具",
-    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("第 2 步") &&
-    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("create_task"),
-    doc.querySelector("#chat .live-activity")?.textContent ?? "(无)");
+    (doc.querySelector("#chat .live-footer-text")?.textContent ?? "").includes("第 2 步") &&
+    (doc.querySelector("#chat .live-footer-text")?.textContent ?? "").includes("create_task"),
+    doc.querySelector("#chat .live-footer-text")?.textContent ?? "(无)");
 
   es.emit("tool_call", { kind: "tool_call", ts,
     data: { step: 2, tool: "todo_write", exit_code: 0, failed: false,
@@ -327,8 +331,8 @@ await sleep(120);
     (doc.querySelector("#chat details.plan")?.textContent ?? "").includes("跑测试"),
     doc.querySelector("#chat details.plan")?.textContent ?? "(无)");
   check("运行中活动行跟着切换工具",
-    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("todo_write"),
-    doc.querySelector("#chat .live-activity")?.textContent ?? "(无)");
+    (doc.querySelector("#chat .live-footer-text")?.textContent ?? "").includes("todo_write"),
+    doc.querySelector("#chat .live-footer-text")?.textContent ?? "(无)");
   check("顶栏也显示当前活动（轨迹/对话都能看到）",
     (doc.querySelector("#runStatus")?.textContent ?? "").includes("第 2 步"),
     doc.querySelector("#runStatus")?.textContent ?? "(无)");

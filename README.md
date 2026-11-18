@@ -8,7 +8,7 @@
 但这些不是重点，重点是权限判定和评测这两层：每一步都有结构化事件，
 命令执行前要过权限检查，任务算不算完成由隐藏测试判定，不靠模型自述。
 
-现在有 396 条 Python 测试、73 条前端测试、76 项界面链路检查，CI 三个作业全绿。
+现在有 398 条 Python 测试、74 条前端测试、77 项界面链路检查，CI 三个作业全绿。
 
 > 仓库：`github.com/Amumya/minicode`　·　MIT　·　本地跑，默认只监听 127.0.0.1
 
@@ -21,7 +21,7 @@
 ![对话视图](docs/images/ui-chat.png)
 
 左栏是工作区和按日期分组的历史会话；主区顶栏可以在「对话 / 轨迹」之间切换。
-对话视图里每轮显示计划、用量和 Markdown 结果；原始 thinking 不进对话气泡，统一在轨迹视图里看。步数用尽/取消会明确标出「这不是最终结果」，正好卡在上限结束会提示可以继续执行。运行中立刻显示当前步骤和正在执行的工具（带呼吸点），顶栏徽章同步显示（「对话 / 轨迹」哪个视图都能看到），todo 计划列表自动展开；提交任务会自动切回对话视图，重新打开时会优先打开正在跑的会话。不同步骤的正文之间空一行，不会粘在一起。
+对话视图里每轮显示计划、用量和 Markdown 结果；原始 thinking 不进对话气泡，统一在轨迹视图里看。步数用尽/取消会明确标出「这不是最终结果」，正好卡在上限结束会提示可以继续执行。运行中会在会话末尾显示当前步骤、正在执行的工具和已用计时器（sticky，滚动时也看得到），顶栏徽章同步显示（「对话 / 轨迹」哪个视图都能看到），todo 计划列表自动展开；提交任务会自动切回对话视图，重新打开时会优先打开正在跑的会话。不同步骤的正文之间空一行，不会粘在一起。
 
 ### 轨迹视图
 
@@ -244,9 +244,9 @@ minicode app --mode gui
 
 | 部分 | 数量 | 命令 |
 |---|---|---|
-| Python 测试 | 396 条 | `pytest`（不需要 API key） |
-| 前端纯逻辑测试 | 73 条 | `npm --prefix web test` |
-| 界面链路检查 | 76 项 | `node web/uicheck.mjs` |
+| Python 测试 | 398 条 | `pytest`（不需要 API key） |
+| 前端纯逻辑测试 | 74 条 | `npm --prefix web test` |
+| 界面链路检查 | 77 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业（Python 3.11 / 3.12 / 前端） | `.github/workflows/ci.yml` |
 
 ## 怎么用
@@ -366,7 +366,7 @@ src/minicode/
   service/         FastAPI 服务（app.py）、存储（store.py：内存 + Redis）
 web/               前端（TypeScript + Vite，无框架，产物已提交到 service/web/）
 eval/              沙箱任务集、判定器、对照实验脚本和原始记录（eval/runs/）
-tests/             396 条 Python 测试，外加一个 fixture MCP server
+tests/             398 条 Python 测试，外加一个 fixture MCP server
 docs/              决策台账、MCP 配置示例、界面截图
 ```
 
@@ -383,7 +383,7 @@ Windows 拒绝 ShellExecute，spawn explorer 会崩，与其留一个看着成�
 
 ## 评测与记录
 
-每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 75 条。
+每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 77 条。
 MCP 配置示例在 [docs/mcp.example.json](docs/mcp.example.json)。README 里的数字都能在那份台账里找到出处。
 
 评测目录的说明见 [eval/README.md](eval/README.md)：任务集、判定流程、防作弊、脚本参数、记录字段、

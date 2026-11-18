@@ -50,6 +50,13 @@ def _wait_done(client, run_id, timeout=10.0):
     raise AssertionError(f"run 没在 {timeout}s 内结束")
 
 
+def test_index_is_not_cached(tmp_path):
+    client = _client(tmp_path, [])
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "no-store" in resp.headers.get("cache-control", "")
+
+
 def test_healthz(tmp_path):
     client = _client(tmp_path, [])
     assert client.get("/healthz").json()["ok"] is True

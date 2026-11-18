@@ -54,6 +54,21 @@ def qt_window_available() -> bool:
     return importlib.util.find_spec("PySide6") is not None
 
 
+def cache_busted_url(url: str) -> str:
+    """给窗口 URL 加一次性版本参数。
+
+    QtWebEngine / Edge 的持久 profile 会把 index.html 缓住；
+    页面里引用的 JS 文件名虽然带 hash，但 index.html 旧了就还是旧 JS。
+    窗口加载时加 ?v=<毫秒时间戳>，保证每次打开都拿新的页面骨架。
+    """
+    if "://" in url:
+        head, tail = url.split("://", 1)
+        if "/" not in tail:
+            url = f"{head}://{tail}/"
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}v={int(time.time() * 1000)}"
+
+
 def _ensure_qt_flags() -> None:
     """给 QtWebEngine 补 Chromium 兼容参数。
 
@@ -342,18 +357,20 @@ def run_app(
 ) -> int:
     """起服务 + 开窗口。窗口关掉之后把服务也收掉。"""
     url = f"http://{host}:{port}"
+    window_url = cache_busted_url(url)
     profile = (Path(workspace) if workspace else Path.cwd()) / ".minicode" / "edge-profile"
     found = find_browser(browser)
     has_gui = qt_window_available()
 
     if dry_run:
         print(f"  服务地址: {url}")
+        print(f"  窗口地址: {window_url}")
         print(f"  桌面窗口: {'PySide6（可用）' if has_gui else '(没装 PySide6，用浏览器窗口)'}")
         print(f"  浏览器  : {found or '(没找到，会退化成只打印地址)'}")
         print(f"  窗口模式: {mode}")
         if found:
-            print(f"  app 参数   : {' '.join(browser_args(found, url, profile, 'app'))}")
-            print(f"  window 参数: {' '.join(browser_args(found, url, profile, 'window'))}")
+            print(f"  app 参数   : {' '.join(browser_args(found, window_url, profile, 'app'))}")
+            print(f"  window 参数: {' '.join(browser_args(found, window_url, profile, 'window'))}")
         return 0
 
     # 端口被旧实例占着时，我们起的 uvicorn 会绑定失败，但 wait_for_health
@@ -387,7 +404,7 @@ def run_app(
     if use_gui:
         print("正在打开桌面窗口（PySide6 / QWebEngineView）…")
         try:
-            run_qt_window(url, workspace=workspace)
+            run_qt_window(window_url, workspace=workspace)
         except Exception as exc:  # noqa: BLE001 - 窗口失败要降级，不能让整个命令挂掉
             print(f"桌面窗口没起来（{type(exc).__name__}: {exc}），退回浏览器窗口", file=sys.stderr)
         else:
@@ -408,10 +425,10 @@ def run_app(
         return 0
 
     print("正在打开窗口…")
-    proc, used = launch_browser(found, url, profile, mode)
+    proc, used = launch_browser(found, window_url, profile, mode)
 
     if proc is None:
-        if not open_via_shell(url):
+        if not open_via_shell(window_url):
             print(f"打不开浏览器，请手动访问 {url}", file=sys.stderr)
         else:
             print(f"已交给系统默认浏览器打开（页面没能在独立窗口里渲染）。")

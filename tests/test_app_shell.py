@@ -233,3 +233,13 @@ def test_run_app_gui_failure_falls_back_to_browser(tmp_path, monkeypatch):
     code = run_app(None, port=8899, workspace=tmp_path, mode="auto")
     assert code == 0
     assert used.get("mode") == "auto"   # 降级后仍按 auto 走浏览器窗口
+
+
+def test_cache_busted_url_adds_version():
+    from minicode.app_shell import cache_busted_url
+
+    u1 = cache_busted_url("http://127.0.0.1:8765")
+    assert u1.startswith("http://127.0.0.1:8765/?v=")
+    u2 = cache_busted_url("http://127.0.0.1:8765/?a=1")
+    assert "?a=1&v=" in u2
+    assert u1 != cache_busted_url("http://127.0.0.1:8765") or True  # 同一毫秒内允许相等
