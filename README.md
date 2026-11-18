@@ -8,7 +8,7 @@
 但这些不是重点，重点是权限判定和评测这两层：每一步都有结构化事件，
 命令执行前要过权限检查，任务算不算完成由隐藏测试判定，不靠模型自述。
 
-现在有 398 条 Python 测试、74 条前端测试、77 项界面链路检查，CI 三个作业全绿。
+现在有 403 条 Python 测试、74 条前端测试、77 项界面链路检查，CI 三个作业全绿。
 
 > 仓库：`github.com/Amumya/minicode`　·　MIT　·　本地跑，默认只监听 127.0.0.1
 
@@ -204,6 +204,23 @@ flowchart LR
 .venv\Scripts\python.exe eval\measure_prompts.py
 ```
 
+### 并发 / 多会话压测
+
+服务层用假 provider 压过：20 个 run 同时跑、8 条 SSE 流并发、取消一半、并发 followup、并发写 Redis，
+`tests/test_concurrency.py` 五条测试进 CI；网络级用 `tools/loadtest.py` 量：
+
+| 场景 | runs / 并发 | store | 工具 | 建 run p50 / p95 | 全部完成 | error |
+|---|---:|---|---|---:|---:|---:|
+| 服务层开销 | 80 / 40 | InMemory | todo_write | 228 / 277 ms | 2.18 s | 0 |
+| 服务层开销 | 200 / 100 | InMemory | todo_write | 434 / 519 ms | 5.39 s | 0 |
+| 带真实工具开销 | 80 / 40 | InMemory | bash | 906 / 1640 ms | 16.6 s | 0 |
+| 持久化 store | 100 / 50 | Redis | todo_write | 438 / 509 ms | 4.11 s | 0 |
+
+200 并发时 200 条 SSE 流全部收到自己的事件、200 个 followup 各自挂回会话，error=0。
+bash 场景慢主要是 PowerShell 子进程开销，不是循环/store。
+复现：`.venv\Scripts\python.exe tools\loadtest.py --runs 200 --concurrency 100 --tool todo_write`
+详细方法、口径和局限见 [docs/并发压测.md](docs/并发压测.md)。
+
 ## 怎么跑
 
 ```powershell
@@ -244,7 +261,7 @@ minicode app --mode gui
 
 | 部分 | 数量 | 命令 |
 |---|---|---|
-| Python 测试 | 398 条 | `pytest`（不需要 API key） |
+| Python 测试 | 403 条 | `pytest`（不需要 API key） |
 | 前端纯逻辑测试 | 74 条 | `npm --prefix web test` |
 | 界面链路检查 | 77 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业（Python 3.11 / 3.12 / 前端） | `.github/workflows/ci.yml` |
@@ -366,7 +383,7 @@ src/minicode/
   service/         FastAPI 服务（app.py）、存储（store.py：内存 + Redis）
 web/               前端（TypeScript + Vite，无框架，产物已提交到 service/web/）
 eval/              沙箱任务集、判定器、对照实验脚本和原始记录（eval/runs/）
-tests/             398 条 Python 测试，外加一个 fixture MCP server
+tests/             403 条 Python 测试，外加一个 fixture MCP server
 docs/              决策台账、MCP 配置示例、界面截图
 ```
 
@@ -383,7 +400,7 @@ Windows 拒绝 ShellExecute，spawn explorer 会崩，与其留一个看着成�
 
 ## 评测与记录
 
-每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 77 条。
+每次取舍的原因和当时的实测数据记在 [docs/取舍与证据.md](docs/取舍与证据.md)，一共 78 条。
 MCP 配置示例在 [docs/mcp.example.json](docs/mcp.example.json)。README 里的数字都能在那份台账里找到出处。
 
 评测目录的说明见 [eval/README.md](eval/README.md)：任务集、判定流程、防作弊、脚本参数、记录字段、
