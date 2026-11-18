@@ -304,6 +304,13 @@ button {
   white-space: nowrap;
 }
 
+#runStatus {
+  max-width: 44vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .badge {
   font-size: 11px;
   padding: 1px 8px;

@@ -274,6 +274,9 @@ doc.querySelector("#submit").click();
 await sleep(120);
 const es = sources.at(-1);
 check("提交后订阅了事件流", es?.url === "/runs/run-new/events", es?.url ?? "(无)");
+  check("提交后立刻显示运行中活动行",
+    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("等待模型回复"),
+    doc.querySelector("#chat .live-activity")?.textContent ?? "(无)");
 const sentBody = bodies.get("POST /runs") ?? {};
 check("提交 body 带上了任务和开关",
   sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
@@ -310,6 +313,26 @@ check("顶栏花费在累加", doc.querySelector("#usage").textContent.includes(
 es.emit("tool_call", { kind: "tool_call", ts,
   data: { step: 2, tool: "create_task", args: { subject: "跑测试" }, exit_code: 0, failed: false } });
 await sleep(120);
+  check("运行中显示当前步骤和工具",
+    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("第 2 步") &&
+    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("create_task"),
+    doc.querySelector("#chat .live-activity")?.textContent ?? "(无)");
+
+  es.emit("tool_call", { kind: "tool_call", ts,
+    data: { step: 2, tool: "todo_write", exit_code: 0, failed: false,
+            args: { todos: [{ content: "跑测试", status: "in_progress" }, { content: "出报告", status: "pending" }] } } });
+  await sleep(150);
+  check("运行中计划列表自动展开",
+    doc.querySelector("#chat details.plan")?.open === true &&
+    (doc.querySelector("#chat details.plan")?.textContent ?? "").includes("跑测试"),
+    doc.querySelector("#chat details.plan")?.textContent ?? "(无)");
+  check("运行中活动行跟着切换工具",
+    (doc.querySelector("#chat .live-activity")?.textContent ?? "").includes("todo_write"),
+    doc.querySelector("#chat .live-activity")?.textContent ?? "(无)");
+  check("顶栏也显示当前活动（轨迹/对话都能看到）",
+    (doc.querySelector("#runStatus")?.textContent ?? "").includes("第 2 步"),
+    doc.querySelector("#runStatus")?.textContent ?? "(无)");
+
 doc.querySelector("#viewTrajectory").click();
 await sleep(250);
 const firstTrajEntry = doc.querySelector("#chat .traj-entry");
@@ -345,6 +368,17 @@ check("流式输出写在助手气泡（不是「你」的气泡）",
   !(liveUserBubble?.textContent ?? "").includes("正在统计") &&
   (liveAssistantBubble?.textContent ?? "").includes("正在统计文件数量"),
   `user=${(liveUserBubble?.textContent ?? "").slice(0, 30)}`);
+
+  // ---- 不同步的正文要分段（空一行），不能粘在一起 ----
+  es.emit("assistant_delta", { kind: "assistant_delta", ts, data: { step: 2, text: "第一段话" } });
+  await sleep(80);
+  es.emit("assistant_delta", { kind: "assistant_delta", ts, data: { step: 3, text: "第二段话" } });
+  await sleep(150);
+  const liveAnswerEl = doc.querySelector("#chat .answer.streaming");
+  const liveParagraphs = [...(liveAnswerEl?.querySelectorAll("p") ?? [])].map((p) => p.textContent ?? "");
+  check("不同步的正文之间分段（空一行）",
+    liveParagraphs.includes("第一段话") && liveParagraphs.includes("第二段话"),
+    `p=${liveParagraphs.join(" | ")}`);
 
 // ---- MCP 工具在轨迹里保留原始名字 ----
 es.emit("tool_call", { kind: "tool_call", ts,

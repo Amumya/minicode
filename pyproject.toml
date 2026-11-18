@@ -45,6 +45,15 @@ minicode = "minicode.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Web 界面的构建产物不是 .py，默认不会进 wheel/sdist。
+# 不声明的话 `pip install .`（非 editable）装出来的包没有 service/web，
+# `minicode serve` 打开就是 404 —— 而 vite.config.ts 里写的"装成包也不会丢"是错的。
+[tool.setuptools.package-data]
+minicode = [
+    "service/web/index.html",
+    "service/web/assets/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

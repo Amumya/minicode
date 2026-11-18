@@ -224,11 +224,11 @@ test("buildTurn 从 start 事件读 max_steps", () => {
 });
 
 test("runOutcome：中断要提示、正好卡上限也要提示、正常结束不提示", () => {
-  const make = (result, events) => buildTurn({
+  const make = (result: Record<string, unknown>, events: AgentEvent[]) => buildTurn({
     id: "r", task: "x", status: "done", result, events,
   });
-  const start = (max) => ev("start", { task: "x", max_steps: max }, 1);
-  const steps = (n) => Array.from({ length: n }, (_, i) => ev("model_call", { step: i + 1 }));
+  const start = (max: number) => ev("start", { task: "x", max_steps: max }, 1);
+  const steps = (n: number) => Array.from({ length: n }, (_, i) => ev("model_call", { step: i + 1 }));
 
   const interrupted = make(
     { ok: false, final_text: "我先总结一下", steps: 3, stop_reason: "max_steps" },

@@ -1,0 +1,3 @@
+# sdist 里也要带上 Web 界面产物（wheel 靠 pyproject 的 package-data）
+recursive-include src/minicode/service/web *
+include README.md

@@ -27,6 +27,7 @@ import {
   type Turn,
 } from "./chat.ts";
 import { describeEvent, type AgentEvent } from "./format.ts";
+import { describeToolCall } from "./chat.ts";
 import {
   formatUsage,
   latestPlan,
@@ -187,6 +188,7 @@ let liveEvents: AgentEvent[] = [];
 let closeStream: (() => void) | null = null;
 let renderQueued = false;
 let viewMode: ViewMode = "chat";
+let liveStatusText = "";
 
 function currentConversation(): Conversation | null {
   return conversations.find((c) => c.root_id === conversationRoot) ?? null;
@@ -429,7 +431,7 @@ function renderTrajectoryEntry(ev: AgentEvent): HTMLElement {
       break;
     }
     case "thinking": {
-      entry.append(rawPre(textOf(ev, "text"), "thinking-text"));
+      entry.append(rawPre(`${textOf(ev, "text")}\n`, "thinking-text"));
       break;
     }
     case "model_call": {
@@ -528,7 +530,7 @@ function flushTrajDelta(state: TrajLog): void {
     head.append(h("span", { class: "traj-step-tag" }, `第 ${state.pendingStep} 步`));
   }
   entry.append(head);
-  entry.append(rawPre(text, "answer-text"));
+  entry.append(rawPre(`${text}\n`, "answer-text"));
   state.log.append(entry);
 }
 
@@ -617,9 +619,11 @@ function renderTrajectory(): void {
 interface LiveView {
   runId: string;
   planHost: HTMLElement;
+  activityEl: HTMLElement;
   usageEl: HTMLElement;
   answerEl: HTMLElement;
   deltaText: string;
+  answerStep: number | null;
 }
 
 let liveView: LiveView | null = null;
@@ -630,18 +634,49 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   // 之前取第一个导致流式输出写进了「你」的气泡，跑完重绘才恢复。
   const bubble = wrap.querySelector(".msg.assistant .bubble") as HTMLElement;
   const planHost = h("div", { class: "plan-host" });
+  const activityEl = h("div", { class: "live-activity muted" }, "运行中 · 等待模型回复…");
   const usageEl = h("div", { class: "turn-usage muted" });
   const answerEl = h("div", { class: "answer streaming markdown" });
-  bubble.replaceChildren(planHost, usageEl, answerEl);
+  bubble.replaceChildren(planHost, activityEl, usageEl, answerEl);
 
   const view: LiveView = {
     runId: turn.runId,
     planHost,
+    activityEl,
     usageEl,
     answerEl,
     deltaText: "",
+    answerStep: null,
   };
   return { el: wrap, view };
+}
+
+function activityText(ev: AgentEvent): string {
+  const step = numOf(ev, "step");
+  const prefix = step === undefined ? "" : `第 ${step} 步 · `;
+  switch (ev.kind) {
+    case "assistant_delta": return `${prefix}模型输出中…`;
+    case "thinking": return `${prefix}模型在思考…`;
+    case "tool_call": {
+      const call = describeToolCall(ev);
+      return `${prefix}正在执行 ${call.tool}${call.summary ? `：${call.summary}` : ""}`;
+    }
+    case "denied": return `${prefix}工具调用被权限拒绝`;
+    case "compact": return `${prefix}正在压缩上下文…`;
+    case "model_call": return `${prefix}模型已返回，继续下一步…`;
+    default: return "";
+  }
+}
+
+function updateLiveBadge(text: string): void {
+  if (!text) return;
+  liveStatusText = text;
+  main.status.hidden = false;
+  main.status.textContent = text;
+}
+
+function setLiveActivity(view: LiveView, text: string): void {
+  view.activityEl.textContent = text;
 }
 
 function renderLiveAnswer(view: LiveView): void {
@@ -657,6 +692,7 @@ function renderLivePlan(view: LiveView, plan: PlanItem[] | null): void {
   let list: HTMLOListElement;
   if (!detail) {
     detail = h("details", { class: "plan" });
+    detail.open = true; // 运行中直接展开，能看见 todo 进度
     list = h("ol", { class: "plan-list" });
     detail.append(h("summary"), list);
     view.planHost.append(detail);
@@ -677,10 +713,19 @@ function applyLiveEvent(ev: AgentEvent): void {
   const view = liveView;
   if (!view) return;
   if (ev.kind === "assistant_delta") {
+    // 一次回复可能跨很多步；不同步的正文之间空一行，避免"上一句+最终回答"粘在一起。
+    const stepNo = numOf(ev, "step") ?? null;
+    if (view.deltaText && stepNo !== view.answerStep) view.deltaText += "\n\n";
+    view.answerStep = stepNo;
     view.deltaText += textOf(ev, "text");
     renderLiveAnswer(view);
   } else if (ev.kind === "tool_call") {
     renderLivePlan(view, latestPlan(liveEvents));
+  }
+  const activity = activityText(ev);
+  if (activity) {
+    setLiveActivity(view, activity);
+    updateLiveBadge(activity);
   }
   view.usageEl.textContent = formatUsage(summarizeUsage(liveEvents));
   updateTopbarUsage();
@@ -734,7 +779,8 @@ function renderChrome(): void {
   main.resume.hidden = !latestRunResumable();
   main.cancel.hidden = !busy;
   main.status.hidden = !busy;
-  if (busy) main.status.textContent = "执行中…";
+  if (busy) main.status.textContent = liveStatusText || "执行中…";
+  else liveStatusText = "";
 }
 
 function renderChat(): void {
@@ -887,7 +933,11 @@ function attachStream(run: RunRow): void {
             const batch = pendingTrajEvents;
             pendingTrajEvents = [];
             if (!trajLive) return;
-            for (const item of batch) appendTrajectoryEvent(trajLive, item);
+            for (const item of batch) {
+              appendTrajectoryEvent(trajLive, item);
+              const activity = activityText(item);
+              if (activity) updateLiveBadge(activity);
+            }
             if (trajFollowTail) main.chat.scrollTop = main.chat.scrollHeight;
           });
         }
@@ -995,6 +1045,11 @@ async function submit(): Promise<void> {
     else {
       runs = [row];
       conversationRoot = runId;
+    }
+    // 流式/活动行都在对话视图里；用户上次停在轨迹时，提交后自动切回对话
+    if (viewMode !== "chat") {
+      viewMode = "chat";
+      remember(VIEW_KEY, "chat");
     }
     attachStream(row);
     render();
@@ -1114,7 +1169,8 @@ async function init(): Promise<void> {
 
   const fromHash = (window.location.hash.match(/^#\/c\/([0-9a-zA-Z_-]+)$/) ?? [])[1] ?? "";
   const saved = recall(LAST_CONVERSATION_KEY);
-  const target = [fromHash, saved].find(
+  const runningConv = conversations.find((c) => c.status === "running" || c.status === "queued");
+  const target = [fromHash, runningConv?.root_id, saved].find(
     (id) => id && conversations.some((c) => c.root_id === id),
   );
   if (target) await openConversation(target, { silent: true });
