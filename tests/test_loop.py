@@ -64,7 +64,7 @@ def test_denied_command_is_not_executed(tmp_path):
     assert result.ok
     assert result.denied == 1
     assert rec.count("denied") == 1
-    # 被拒的命令不能真的执行 —— 没有 tool_call 事件
+    # 被拒绝的命令不得实际执行，因此不产生 tool_call 事件。
     assert rec.count("tool_call") == 0
 
     # 但模型要收到一条结构化结果，知道自己走不通

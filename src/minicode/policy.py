@@ -1,21 +1,18 @@
-"""权限判定：先把命令解析成结构，再按规则判 allow / deny。
+"""权限判定：将命令解析为结构后按规则判定 allow / deny。
 
-为什么不直接用子串黑名单：
+设计原因：不使用子串黑名单。子串匹配 `"rm -rf" in cmd` 存在两类错误：
+误报：`echo "rm -rf /"` 与 `grep -r "rm -rf" .` 会被识别为危险命令。
+漏报：`rm  -rf  /`（多空格）、`rm -fr /`（参数顺序）、`/bin/rm -rf /`（绝对路径）
+无法匹配字面量 `rm -rf`。
 
-    子串匹配 `"rm -rf" in cmd` 会同时犯两类错。
-    误报：`echo "rm -rf /"` 和 `grep -r "rm -rf" .` 都会被当成危险命令。
-    漏报：`rm  -rf  /`（多空格）、`rm -fr /`（参数顺序）、`/bin/rm -rf /`
-         （绝对路径）都匹配不上 `rm -rf` 这个字面量。
+本模块先对命令进行拆分与分词，提取“程序名 + 参数”，再按参数语义判定；
+多空格、参数顺序与绝对路径不影响结果。
 
-    这个模块先把命令切开、分词，拿到"程序名 + 参数"，再按参数语义判断。
-    这样多空格、参数顺序、绝对路径都不影响判定。
-
-已知的局限（先写在这，免得被当成全）：
-
-    * 按 `;` `&&` `||` `|` 换行切分，不看引号里的分隔符。
-      所以 `echo "a; rm -rf /"` 会被切成两段，第二段是假阳性 —— 但方向是误报，不是漏报。
-    * 不处理 `$(...)`、反引号、heredoc 里面的命令。
-    * 规则是白名单式的判断，不是完整的 shell 语法分析。
+已知限制：
+* 按 ; && || | 与换行切分，不解析引号内的分隔符，因此 `echo "a; rm -rf /"`
+  会被拆成两段，可能产生误报。
+* 不处理 $(...)、反引号与 heredoc 中的命令。
+* 规则为白名单式判断，并非完整的 shell 语法分析。
 """
 
 from __future__ import annotations
@@ -27,7 +24,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-# 判定结果里用稳定的原因码，不要用中文描述去比对（描述以后会改）
+# 判定结果使用稳定原因码；禁止使用中文描述进行比较（描述文本可能变更）。
 DENIED_UNPARSABLE = "unparsable"
 DENIED_SYSTEM_CMD = "system_command"
 DENIED_DEVICE_WRITE = "device_write"
@@ -61,7 +58,7 @@ BANNED_PROGRAMS = {
 }
 
 # 递归删除时要拦下的目标。**全部小写**：比较前会统一转小写，
-# 之前 $HOME 写成大写导致这条规则永远不命中（实测能删掉家目录）。
+# 此前使用大写 $HOME 导致规则无法命中（已验证可删除家目录）。
 DANGEROUS_TARGETS = {
     "/", "/*", "~", "~/*", "$home", "${home}", "$env:userprofile",
     "*", ".", "..", "c:\\", "c:/", "d:\\", "d:/",
@@ -427,7 +424,7 @@ def _judge_inner(command: str, workspace: Path | None, depth: int) -> Verdict:
         return Verdict(False, DENIED_UNPARSABLE, str(exc))
 
     for chain in chains:
-        # 同一条管道里：抓取远程内容直接喂给 shell
+        # 同一管道中，将远程内容直接传入 shell。
         programs = [s.program for s in chain]
         if len(programs) > 1:
             first = programs[0]

@@ -1,12 +1,12 @@
 """主循环。
 
-形状很普通：拿回复 → 有工具调用就执行 → 结果回灌 → 再来一轮。
-真正值得看的是三件事：
+流程：调用模型 → 执行工具调用 → 回填工具结果 → 进入下一轮。
 
-    1. 工具调用先过权限判定，被拒的不执行，但仍然回给模型一条结构化结果，
-       让它自己知道"这条路走不通"，而不是静默跳过。
-    2. 每一次模型调用和工具调用都记事件，指标从事件算，不从日志猜。
-    3. 步数有上限，烧钱的路径必须有闸。
+三个关键设计：
+1. 工具调用执行前经过权限判定；被拒绝的调用不执行，但仍返回结构化结果，
+   使模型能够识别调用失败的原因。
+2. 每次模型调用与工具调用均记录结构化事件；指标由事件计算，不解析日志文本。
+3. 设置 max_steps 上限，限制单次 run 的模型调用次数与成本。
 """
 
 from __future__ import annotations
@@ -134,9 +134,9 @@ def run(
         messages: list[dict] = list(resume.get("messages") or [])
         messages = _drop_stale_skipped(messages)
         start_step = int(resume.get("step", 0)) + 1
-        # max_steps 是"**再给几步**"，不是"跑到第几步"。
-        # 之前按绝对步数算：检查点停在 max_steps 时，续跑循环一次都不进，
-        # 直接返回 ok=False —— 用户点「继续跑」看到的是"没反应"。
+        # max_steps 表示“追加步数”，而非绝对步号。
+        # 若按绝对步号计算，检查点停在 max_steps 时续跑循环不会执行，
+        # 直接返回 ok=False，表现为“继续跑”无响应。
         end_step = start_step + max(1, settings.max_steps) - 1
         usage_total.update(resume.get("usage") or {})
         rec.add("resume", from_step=start_step - 1,
@@ -146,7 +146,7 @@ def run(
         start_step = 1
         end_step = settings.max_steps
 
-    # 不传就用默认的（只挂一个权限钩子）。传了就完全用调用方的，便于测试和扩展。
+    # 未传入时使用默认钩子（仅包含权限钩子）；传入时使用调用方提供的钩子，便于测试与扩展。
     bus = hooks if hooks is not None else default_hooks()
 
     rec.add("start", task=task, model=settings.model, tools=tools.names(),
@@ -156,8 +156,8 @@ def run(
     n_models = 0     # 模型调用次数
 
     for step in range(start_step, end_step + 1):
-        # 取消：每步开头检查一次。正在飞的模型调用打断不了，
-        # 但它一返回就会被这里拦下 —— 不会继续执行工具、也不会再发下一次请求。
+        # 取消检查：每步开始时检查一次。已发起的模型调用无法中断，
+        # 但其返回后将在此处终止，不再执行工具或发起下一次请求。
         if should_stop is not None and should_stop():
             rec.add("finish", step=step - 1, ok=False, reason="cancelled")
             if on_step is not None:
@@ -172,8 +172,10 @@ def run(
                 denied=n_denied,
             )
 
-        # 每次调模型之前压一次。压的是"要发出去的那份"，
-        # 所以检查点里存的也是压缩后的内容 —— 恢复回来发送的东西才一致。
+         
+# 每次调用模型前执行压缩。压缩对象为即将发送的消息；
+         
+# 检查点保存的同样是压缩后的内容，确保恢复后发送的内容与中断前一致。
         if compactor is not None:
             messages, cstats = compactor.compact(messages)
             if cstats.changed:
@@ -208,7 +210,7 @@ def run(
         except Exception as exc:  # noqa: BLE001 - 网络/API 异常不能让整个进程挂掉
             rec.add("finish", step=step, ok=False, reason="provider_error")
             if on_step is not None:
-                # 消息没变，但保留进度，至少能续跑
+                # 消息未变化，保留检查点以支持续跑。
                 on_step({"messages": messages, "step": step - 1, "usage": usage_total})
             return RunResult(
                 ok=False,
@@ -251,8 +253,8 @@ def run(
 
         # 最后一步还要求调工具：这些工具不执行。
         # **不能**把这一轮的 assistant tool_use 和假 tool_result 写进 messages/检查点：
-        # 续跑时模型会看到"[skipped] 步数已用尽"，然后直接总结收尾（实测踩过）。
-        # 检查点保持在"上一步工具结果补齐"的状态，续跑就从这里重新调用模型。
+        # 续跑时模型若看到 [skipped] 步数已用尽，会直接总结收尾（已知问题）。
+        # 检查点应保持“上一步工具结果已补齐”的状态，使续跑从该状态重新调用模型。
         if step == end_step and reply.tool_calls:
             if on_step is not None:
                 on_step({"messages": messages, "step": step - 1, "usage": usage_total})

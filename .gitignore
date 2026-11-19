@@ -73,3 +73,8 @@ pytest_*.txt
 # Python 的 mkdtemp 会生成 tmpXXXX 目录；这台机器 TEMP 指向仓库根，
 # 测试里随手建的临时目录曾被抓进提交（里面是测试用的记忆文件）。
 tmp*/
+
+# ---- 一次性探针脚本与原始实验输出（不入库） ----
+thinking_*.jsonl
+thinking_*.json
+scripts/thinking_*.py

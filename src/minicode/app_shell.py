@@ -373,10 +373,10 @@ def run_app(
             print(f"  window 参数: {' '.join(browser_args(found, window_url, profile, 'window'))}")
         return 0
 
-    # 端口被旧实例占着时，我们起的 uvicorn 会绑定失败，但 wait_for_health
-    # 会从旧实例拿到 200 —— 结果窗口指向旧服务，用户以为在用新的。
+    # 端口被旧实例占用时，新启动的 uvicorn 会绑定失败，但 wait_for_health
+    # 会从旧实例获取 200 响应，导致窗口指向旧服务。
     if _port_in_use(host, port):
-        print(f"端口 {port} 已经被占用（可能之前的服务还在跑）。", file=sys.stderr)
+        print(f"端口 {port} 已被占用（可能存在残留服务）。", file=sys.stderr)
         print(f"  换个端口：minicode app --port {port + 1}", file=sys.stderr)
         return 1
 

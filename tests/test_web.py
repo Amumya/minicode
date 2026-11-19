@@ -43,7 +43,7 @@ def test_root_serves_html(client):
 @pytest.mark.skipif(not WEB_DIR.is_dir(), reason="前端还没构建")
 def test_static_assets_are_served(client):
     index = client.get("/").text
-    # 产物文件名带哈希，所以从 HTML 里把路径抠出来再请求，别写死
+    # 产物文件名包含哈希，因此先从 HTML 提取路径再请求，避免硬编码。
     assert "assets/" in index
     start = index.find("assets/")
     end = index.find('"', start)

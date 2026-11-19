@@ -27,7 +27,7 @@ def test_read_binary_file_returns_error(tmp_path):
     binary.write_bytes(b"\xff\xfe\x00\x01\x02\xff")
     result = ReadFileTool().run({"path": "blob.bin"}, tmp_path)
     assert result.exit_code == 1
-    # 要么被内部识别成"不是 UTF-8"，要么被统一兜底接住 —— 关键是别抛异常
+    # 要么被识别为非 UTF-8，要么由统一兜底处理；断言不抛出异常。
     assert "失败" in result.content or "UTF-8" in result.content
 
 

@@ -76,7 +76,7 @@ export function describeEvent(ev: AgentEvent): Described {
       };
     }
     case "assistant_delta":
-      // 增量事件只在流式时出现；原始事件列表里只显示一小段，别把每条都铺开
+      // 增量事件仅在流式阶段出现；原始事件列表仅显示摘要，避免逐条展开。
       return { label: "模型输出", detail: clip(str(d.text), 60), tone: "info" };
     case "thinking": {
       const step = num(d.step) ?? 0;

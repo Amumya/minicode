@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PY = ROOT / ".venv" / "Scripts" / "python.exe"
 
-# 这个任务专门测"环境发现"：它必须跑一次测试，而跑测试需要装了 pytest 的解释器。
+# 该任务用于验证环境发现能力：执行测试需要已安装 pytest 的解释器。
 # 不告诉它解释器在哪，它就得自己试错找。
 TASK = (
     "跑一下 eval/sandbox/t1_counter 目录里的测试，告诉我通过还是失败。"

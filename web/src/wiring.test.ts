@@ -1,14 +1,14 @@
 /**
  * 界面接线的静态检查。
  *
- * 为什么不跑浏览器：jsdom 不支持 `type="module"` 的脚本，真正的浏览器自动化又要下载
- * 整个 Chromium。所以这里退一步，检查最容易出错、又能静态检查的几件事：
+ * 不使用浏览器自动化：jsdom 不支持 type="module" 脚本，完整浏览器自动化需引入 Chromium。
+ * 因此仅检查以下静态约束：
  *
- *   1. main.ts 里取的每个元素 id，index.html 里都真的有
- *   2. 前端请求的每个接口路径，后端真的提供（**直接解析 app.py 的路由**，不再维护白名单）
- *   3. 页面骨架里该有的区域都在（左栏 / 主区 / 输入区 / 对话-轨迹切换）
+ *   1. main.ts 中引用的每个元素 id 均存在于 index.html
+ *   2. 前端请求的接口路径均由后端提供（直接解析 app.py 路由，不维护白名单）
+ *   3. 页面骨架包含（左栏 / 主区 / 输入区 / 对话-轨迹切换）
  *
- * 这几条错了，页面一打开就是"找不到元素 #xxx"或者一片 404。
+ * 上述检查失败会导致页面运行时出现元素缺失或 404。
  */
 
 import assert from "node:assert";
@@ -79,7 +79,7 @@ test("main.ts 取的每个元素 id 都在 index.html 里", () => {
 
 test("前端请求的接口路径都是后端有的", () => {
   const { exact, prefixes } = backendRoutes();
-  // 解析失败时这里会是 0，说明正则过时了，别让它默默通过
+  // 解析失败时返回 0，表示正则已过期；不得静默通过。
   assert.ok(exact.size >= 6, `只解析到 ${exact.size} 个后端路由，正则可能失效了`);
 
   const paths = new Set([...fetchPaths(MAIN), ...fetchPaths(API_SRC)]);
@@ -116,7 +116,7 @@ test("轨迹视图是块级滚动容器（jsdom 量不了布局，只能静态�
 });
 
 test("流式回答写进助手气泡（不是用户气泡）", () => {
-  // 一轮里有两个 .bubble，取第一个会把流式输出写进「你」的气泡。
+  // 一轮包含两个 .bubble；取第一个会将流式输出写入用户气泡。
   assert.match(MAIN, /\.msg\.assistant \.bubble/);
 });
 

@@ -105,7 +105,7 @@ def test_delete_running_run_409(tmp_path):
     store.create(RunState(id="run-live", task="t", model="m",
                           workspace=str(tmp_path), status="running"))
     client = _client(tmp_path, store)
-    # 没有活跃 worker，属于僵尸；这里直接测"活跃"分支需要真的起 worker，
-    # 所以换个断言：至少不会 500，且要么删要么拒绝
+    # 无活跃 worker，属于残留状态；验证“活跃”分支需要启动真实 worker，
+    # 因此仅断言响应不为 500，且删除或拒绝均合法。
     resp = client.delete("/runs/run-live")
     assert resp.status_code in (200, 409)

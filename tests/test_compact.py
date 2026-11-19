@@ -66,7 +66,7 @@ def test_large_output_is_persisted(tmp_path):
     text = out[2]["content"][0]["content"]
     assert "完整内容在" in text
     assert len(text) < 2000
-    # 落盘文件真的存在，而且内容完整
+    # 落盘文件实际存在，且内容完整。
     files = list((tmp_path / ".minicode" / "tool_results").glob("*.txt"))
     assert len(files) == 1
     assert len(files[0].read_text(encoding="utf-8")) == 50_000

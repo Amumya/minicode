@@ -1,20 +1,18 @@
 """MCP（Model Context Protocol）客户端。
 
-协议背景（2026-11 时点的官方规范）：
-    * 最新版 `2026-07-28` 是"**现代**"协议：**没有 initialize 握手**，每个请求在
-      `_meta` 里自带协议版本/客户端信息/能力；响应是 `{result: {resultType: "complete", ...}}`。
-    * `2025-11-25` 及更早是"**旧版**"：先 `initialize` 握手 → `notifications/initialized`，
-      然后才能 `tools/list` / `tools/call`；响应没有 `resultType`。
-    * 两代都是 JSON-RPC 2.0，stdio 传输按行分隔。
+协议版本（截至 2026-11）：
+* 2026-07-28：无 initialize 握手；每个请求在 _meta 中携带协议版本、客户端信息与能力，
+  响应为 {result: {resultType: "complete", ...}}。
+* 2025-11-25 及更早：先 initialize 握手 → notifications/initialized，
+  之后可调用 tools/list 与 tools/call；响应无 resultType。
+* 两代协议均为 JSON-RPC 2.0，stdio 传输按行分隔。
 
-本项目的客户端策略：**先按现代版发，失败再回退旧版**（从新到旧把版本试一遍）。
-这样既能对接最新 server，也能对接大量还在用 2025-06-18 的现成 server。
+客户端策略：优先按现代版本发起请求，失败后按版本从新到旧回退。
 
-安全边界（重要）：
-    * 配置里写了 `command` 就等于允许它在本机执行任意代码 —— 这是 MCP 的固有风险。
-    * 因此：server 必须显式 `"enabled": true`，工具必须显式列进 `"allow"`，
-      两个条件缺一不可；默认一个都不放行。
-    * 本模块只负责"连上、列出来、调一下"，权限判断在 `tools/mcp.py` 的适配器里做。
+安全边界：
+* 配置中的 command 字段允许 MCP server 在本机执行任意代码，属于协议的固有信任边界。
+* server 必须显式设置 "enabled": true；工具必须显式列入 "allow"；两者缺一不可，默认不放行。
+* 本模块仅负责连接、列出工具与调用；权限判断由 tools/mcp.py 的适配器完成。
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ MODERN_VERSION = "2026-07-28"
 # 旧版协议版本，从新到旧尝试
 LEGACY_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
 
-# 单个工具结果的字符上限：外部 server 的输出不可控，和 bash 那次是同一类坑
+# 单个工具结果的字符上限：外部 server 输出不可控，与 bash 输出限制属于同类问题。
 MAX_RESULT_CHARS = 20_000
 # 启动/握手超时、单次请求超时
 START_TIMEOUT = 15.0

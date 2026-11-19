@@ -1,12 +1,12 @@
 /**
- * 界面接线：左栏（工作区 + 历史会话）+ 主区（对话 / 轨迹两个视图）。
+ * 界面接线：左栏（工作区与历史会话）与主区（对话 / 轨迹视图）。
  *
- * 参考 DSH Web GUI 的结构：主区通过导航栏切换视图，而不是常驻一个右栏。
- * - 对话：按轮次展示问题、计划、思考、结果（流式增量更新）
- * - 轨迹：按轮次/步骤展示完整原始记录（thinking 全文、工具参数、完整输出、事件 JSON），不省略
+ * 主区通过导航栏切换视图，不使用常驻右侧栏。
+ * - 对话：按轮次展示计划、用量与结果（流式增量更新）
+ * - 轨迹：按轮次与步骤展示完整事件记录（工具参数、完整输出、事件 JSON）
  *
- * 分层：纯逻辑在 chat.ts / derive.ts / format.ts（都有单测），接口在 api.ts，
- * 这里只负责"把状态画到 DOM 上"和"把用户操作变成请求"。
+ * 分层：纯逻辑位于 chat.ts / derive.ts / format.ts（均有单元测试），
+ * 接口位于 api.ts；本文件负责 DOM 渲染与用户操作到请求的转换。
  */
 
 import "./styles.css";
@@ -631,7 +631,7 @@ let liveView: LiveView | null = null;
 function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
   const wrap = renderTurn(turn, true);
   // 一轮里有两个 .bubble（用户 + 助手），必须取助手那个；
-  // 之前取第一个导致流式输出写进了「你」的气泡，跑完重绘才恢复。
+  // 一轮包含用户与助手两个 .bubble；取第一个会将流式内容写入用户气泡。
   const bubble = wrap.querySelector(".msg.assistant .bubble") as HTMLElement;
   const planHost = h("div", { class: "plan-host" });
   const usageEl = h("div", { class: "turn-usage muted" });

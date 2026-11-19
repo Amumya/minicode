@@ -1,2 +1,0 @@
-{"i": 0, "ok": true, "prompt": "计算 7 + 17 * 23 的结果，只回一个数字。", "n_blocks": 1, "n_plain": 1, "n_redacted": 0, "thinking_chars": 76, "signature_chars": 36, "all_signed": true, "text_chars": 3, "answer": "398", "usage": {"input_tokens": 64, "output_tokens": 48}, "latency_s": 0.66}
-{"i": 1, "ok": true, "prompt": "计算 (22 - 19) * 29 的结果，只回一个数字。", "n_blocks": 1, "n_plain": 1, "n_redacted": 0, "thinking_chars": 124, "signature_chars": 36, "all_signed": true, "text_chars": 2, "answer": "87", "usage": {"input_tokens": 65, "output_tokens": 41}, "latency_s": 0.61}

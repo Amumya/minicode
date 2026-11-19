@@ -1,16 +1,16 @@
 /**
- * 一个够用就好的 Markdown 子集渲染器。
+ * Markdown 子集渲染器。
  *
- * 为什么不装 marked/DOMPurify：
- *   1. 模型输出是**不可信内容**，用 innerHTML 渲染就必须接一层 sanitizer；
- *      这里直接生成 DOM 节点（文字一律走 textContent），从结构上就没有注入面
- *   2. 项目一直刻意保持零前端依赖
+ * 设计原因：不引入 marked / DOMPurify。
+ *   1. 模型输出属于不可信内容；使用 innerHTML 渲染需额外 sanitizer。
+ *      本实现直接生成 DOM 节点，文本统一通过 textContent 写入，从结构上消除注入面。
+ *   2. 项目保持零前端依赖。
  *
  * 支持：标题、段落、粗体/斜体/行内代码、围栏代码块、无序/有序列表、引用、
- *       分隔线、GFM 表格、链接（只允许 http/https/mailto/站内相对路径）。
+ *       分隔线、GFM 表格与链接（仅允许 http/https/mailto/站内相对路径）。
  *
- * 拆成两段：`parseMarkdown()` 是纯函数（可在 node 里单测），
- * `renderMarkdown()` 只负责把解析结果变成 DOM。
+ * 分为两段：parseMarkdown() 为纯函数（可在 node 中单元测试），
+ * renderMarkdown() 负责将解析结果转换为 DOM。
  */
 
 export type Inline =

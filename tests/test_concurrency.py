@@ -102,7 +102,7 @@ def test_concurrent_runs_are_isolated_and_grouped(tmp_path):
         starts = [e for e in with_events["events"] if e["kind"] == "start"]
         assert len(starts) == 1
         assert starts[0]["data"]["task"] == task
-        # 不允许混进别人的任务事件
+        # 不允许包含其他任务的事件。
         assert all(e["kind"] != "start" or e["data"]["task"] == task for e in with_events["events"])
 
     convs = client.get("/conversations").json()["conversations"]
@@ -136,7 +136,7 @@ def test_concurrent_sse_streams_only_get_own_events(tmp_path):
         assert "start" in kinds and "end" in kinds
         starts = [e for e in stream["events"] if e["kind"] == "start"]
         assert starts[0]["data"]["task"] == expected_tasks[rid]
-        # 每条流只包含自己的 start（没有别人的任务名）
+        # 每条流仅包含自身的 start 事件（不含其他任务名）。
         assert all(
             e["kind"] != "start" or e["data"]["task"] == expected_tasks[rid]
             for e in stream["events"]

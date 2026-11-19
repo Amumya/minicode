@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * 用 jsdom 把构建出来的 bundle 真跑一遍。
+ * 使用 jsdom 执行构建产物并验证界面链路。
  *
- * 覆盖：左栏（工作区/历史会话）→ 点会话 → 对话/轨迹视图切换 → 轨迹展示完整原始信息
- *      → 新会话 → 提交 → 流式 → 结束（Markdown 渲染）→ 接着说 → 删除 → 取消。
+ * 覆盖：左栏（工作区/历史会话）→ 打开会话 → 对话/轨迹视图切换 → 轨迹事件展示
+ *      → 新建会话 → 提交 → 流式输出 → 结束（Markdown 渲染）→ followup → 删除 → 取消。
  *
- * 用法（在 web/ 下）：npm install --no-save jsdom && node uicheck.mjs
+ * 用法（在 web/ 目录下）：npm install --no-save jsdom && node uicheck.mjs
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -192,7 +192,7 @@ check("清空令牌后不再带 Authorization",
 check("每个会话行都有删除按钮", doc.querySelectorAll("#conversations .conv-del").length === 1,
   `${doc.querySelectorAll("#conversations .conv-del").length} 个`);
 
-// 默认值：五个开关全选、步数 20（实测 8 步不够跑多步任务）
+// 默认值：六个开关全选，步数 20（多步任务所需步数高于 8）。
 const defaultSwitches = ["#optFiles", "#optPlan", "#optSkills", "#optCompact", "#optTasks", "#optMemory"];
 check("五个开关默认全选", defaultSwitches.every((sel) => doc.querySelector(sel).checked),
   defaultSwitches.map((sel) => `${sel}=${doc.querySelector(sel).checked}`).join(" "));

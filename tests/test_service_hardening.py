@@ -92,19 +92,19 @@ def test_sse_includes_all_events_before_end(tmp_path):
     assert streamed == stored, f"流里 {streamed} 条，store 里 {stored} 条"
 
 
-# ------------------------------------------------------------------ 并发与僵尸
+# ------------------------------------------------------------------ 并发与残留状态
 
 
 def test_followup_rejected_while_parent_running(tmp_path):
-    """父 run 还在跑时续聊要 409 —— 否则会有两个 run 同时改同一个工作区。"""
+    """父 run 执行期间调用 followup 应返回 409，否则两个 run 会同时修改同一工作区。"""
     client, store = _make(tmp_path)
-    # 手工造一个"正在跑"的 run（active_runs 里有它需要走真实 worker，
-    # 这里换个角度：status=running 且没有 worker，就不该被当成"还在跑"——
-    # 所以先验证 running 但僵尸时**允许** followup，见下一个测试）
+    # 构造一个“正在运行”的 run。真实 worker 会将其加入 active_runs；
+    # 此处验证另一种情况：status=running 但没有对应 worker，不应视为“仍在运行”。
+    # 先验证 running 且无 worker 时允许 followup（见下一个测试）。
     run = RunState(id="run-live000001", task="第一轮", model="m",
                    workspace=str(tmp_path), status="running")
     store.create(run)
-    # 没有 worker 在跑它 → 属于僵尸，允许续聊（有检查点才行，这里没有 → 409）
+    # 无对应 worker，属于残留状态；允许续聊，但需要检查点（此处无检查点，返回 409）。
     resp = client.post(f"/runs/{run.id}/followup", json={"text": "接着说"})
     assert resp.status_code == 409
 

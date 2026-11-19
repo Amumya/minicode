@@ -198,8 +198,10 @@ class RedisStore:
             "parent_id": run.parent_id or "",
         })
         # 用自增序号当 zset 分数，不用 created_at：
-        # 实测这台机器上 time.time() 连续三次返回同一个值，并列的分数会让
-        # "最新的排最前"退化成按 id 字典序，偶发失效。
+           
+# 在本机验证中，time.time() 连续三次返回相同值；分数并列会
+           
+# 使“最新优先”退化为按 id 字典序，导致偶发失效。
         seq = int(self._r.incr(self._k_seq()))
         self._r.zadd(self._k_index(), {run.id: seq})
         self._touch(self._k_run(run.id), self._k_index())

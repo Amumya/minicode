@@ -1,9 +1,8 @@
 /**
- * 从事件流里"算"出界面要显示的东西。
+ * 从事件流派生界面所需指标。
  *
- * 为什么不改后端：这些数据本来就都在事件里 —— 花费、计划、压缩效果全是
- * 工具调用和模型调用的副产物。把它们算在纯函数里，既不用动接口，
- * 也能用 `node --test` 直接测（界面渲染那一层测不了）。
+ * 设计原因：用量、计划与压缩统计均来自事件，属于工具调用与模型调用的副产物。
+ * 以纯函数实现，无需修改后端接口，可直接使用 node --test 测试。
  */
 
 import type { AgentEvent } from "./format.ts";
@@ -141,7 +140,7 @@ export interface RunSummary {
   result?: Record<string, unknown> | null;
 }
 
-/** 什么时候该显示"继续跑"按钮：没跑完、或者出错了，而且有检查点（后端会校验）。 */
+/** “继续跑”按钮显示条件：未完成或出错，且存在检查点（由后端校验）。 */
 export function canResume(run: RunSummary | null): boolean {
   if (!run) return false;
   const status = run.status ?? "";
@@ -154,8 +153,8 @@ export function canResume(run: RunSummary | null): boolean {
 /**
  * 能不能在上一轮后面接着说。
  *
- * 和 canResume 的区别：resume 是"这个 run 被中断了，从检查点接着跑"；
- * followup 是"这个 run 已经聊完了，我想再问一句"。两者都能拿到检查点里的消息历史，
+ * 与 canResume 的区别：resume 表示 run 被中断后从检查点继续；
+ * followup 表示当前轮已结束，新增一轮对话；两者均可获得检查点中的消息历史，
  * 但语义不同，界面上要分开显示。
  */
 export function canFollowup(run: RunSummary | null): boolean {

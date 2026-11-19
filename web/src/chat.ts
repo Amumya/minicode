@@ -1,12 +1,12 @@
 /**
- * 把"一串 run + 它们的事件"整理成聊天界面要显示的轮次。
+ * 将 run 及事件转换为聊天界面所需的轮次数据。
  *
- * 为什么单独一个模块：这部分逻辑（用户说了什么、助手答了什么、中间调了哪些工具）
- * 是纯数据变换，可以脱离 DOM 测。main.ts 只负责把它画出来。
+ * 职责：用户输入、助手输出与工具调用属于纯数据变换，可脱离 DOM 进行单元测试；
+ * main.ts 仅负责渲染。
  *
  * 术语：
- *   turn  = 一轮对话（用户一句话 + 助手做的一堆事 + 最终回答）
- *   一个会话（conversation）= 若干轮串起来，靠 run.parent_id 关联
+ *   turn：一个用户轮次（用户输入、助手执行过程与最终回答）
+ *   conversation：多个轮次通过 run.parent_id 关联形成的会话
  */
 
 import type { AgentEvent } from "./format.ts";
@@ -27,7 +27,7 @@ export interface RunLike {
 export interface ToolCallView {
   tool: string;
   ok: boolean;
-  /** 一句话摘要（命令/路径原文，已折叠空白） */
+  /** 摘要（命令/路径原文，空白已折叠） */
   summary: string;
   /** 退出码，界面用来标失败 */
   exitCode?: number;
@@ -189,8 +189,8 @@ export function buildTurns(runs: RunLike[]): Turn[] {
 /**
  * 把连续的 assistant_delta 合并成一条事件。
  *
- * 为什么要合并：流式输出时一次回答会拆成几十条增量事件，原始事件面板里
- * 就会刷出几十行"思考"，看起来像卡住了在滚屏。合并成一条完整文本更可读。
+ * 合并原因：流式输出会将一次回答拆分为数十条增量事件；原始事件列表
+ * 若逐条展示会形成大量行，合并为一条完整文本更便于阅读。
  */
 export function mergeDeltaEvents(events: AgentEvent[]): AgentEvent[] {
   const out: AgentEvent[] = [];

@@ -54,15 +54,13 @@ from minicode.tools import default_registry  # noqa: E402
 from failure_kinds import classify  # noqa: E402  (同目录)
 
 SANDBOX = ROOT / "eval" / "sandbox"
-# 工作区必须放在**仓库外面**。
-# 之前放在 eval/tmp 下，agent 用 `..` 就能爬回项目目录，把基准任务的源码改掉
-# （实测发生过：t2_ranges 和 t4_config 的起始代码被改成"答案"，隐藏测试一开始就过）。
-# 工作区必须放在**仓库外面**。
-# 踩过两次：
-#   1) 放 eval/tmp 下时，agent 用 `..` 爬回项目，把基准任务的源码改成了"答案"
-#   2) tempfile.gettempdir() 在这个会话里指向仓库根目录（写 AppData 被文件沙箱拒），
-#      于是"临时目录"其实还在仓库里
-# 现在固定在仓库的上一级目录下，并配合 source_fingerprint() 做兜底校验。
+# 工作区必须位于仓库之外。
+# 已知问题：
+#   1) 工作区置于 eval/tmp 时，agent 可通过 `..` 返回项目目录，修改基准任务源码；
+#      t2_ranges 与 t4_config 的起始代码曾被改为答案，导致隐藏测试初始即通过。
+#   2) 当前会话中 tempfile.gettempdir() 指向仓库根目录（写入 AppData 被文件沙箱拒绝），
+#      因此“临时目录”实际仍位于仓库内。
+# 当前固定使用仓库上一级目录，并通过 source_fingerprint() 进行校验。
 TMP = ROOT.parent / "_eval_tmp"
 
 TASK_FRAME = (
@@ -103,7 +101,7 @@ def prepare(task: str) -> Path:
         shutil.rmtree(ws)
     ws.mkdir(parents=True)
     # 忽略 __pycache__：不忽略的话，pytest 生成的 .pyc 会被拷进工作区，
-    # 跑完哈希一变就被当成"agent 改了测试文件" —— 实测出现过这种假阳性。
+    # 若运行后哈希变化，会被误判为“agent 修改了测试文件”（已知误报场景）。
     ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
     for sub in ("src", "tests"):
         shutil.copytree(src / sub, ws / sub, ignore=ignore)
@@ -113,9 +111,9 @@ def prepare(task: str) -> Path:
         if extra.is_file() and extra.name != "task.txt":
             shutil.copy2(extra, ws / extra.name)
 
-    # 让 `python -m pytest` 在工作区根目录就能跑通：
+    # 使 `python -m pytest` 可在工作区根目录运行：
     # 不写这个的话，测试里的 `from seq import ...` 找不到模块，
-    # agent 会先去折腾 sys.path，白烧几步（实测过）。
+    # 否则 agent 会先处理 sys.path，造成无效步骤消耗（已验证）。
     (ws / "pytest.ini").write_text("[pytest]\npythonpath = src\n", encoding="utf-8")
     return ws
 
@@ -126,7 +124,7 @@ def run_hidden(ws: Path, task: str) -> tuple[bool, str]:
     if not hidden_files:
         return False, "没有隐藏测试"
     # 拷进去时改名成 test_ 前缀：pytest 只认 test_*.py 这个模式，
-    # 直接放 hidden_*.py 即使显式传路径也可能被跳过（实测过）。
+    # 若直接保留 hidden_*.py，即使显式传入路径也可能被跳过（已验证）。
     renamed = {}
     for f in hidden_files:
         target = ws / "tests" / f"test_{f.name}"
@@ -136,8 +134,8 @@ def run_hidden(ws: Path, task: str) -> tuple[bool, str]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ws / "src")
     # 关键：隐藏测试的文件名是 hidden_*.py，不匹配 pytest 默认的 test_*.py 规则。
-    # 不带路径跑 `pytest -q` 只会收集到可见测试 —— 那样"隐藏测试判定"其实是假的，
-    # 实际只是在重跑可见测试。必须把隐藏文件显式列出来。
+    # 未指定路径的 `pytest -q` 仅收集可见测试，导致隐藏测试判定失效；
+    # 实际仅重复执行可见测试。必须显式列出隐藏测试文件。
     targets = ["tests"]
     try:
         proc = subprocess.run(

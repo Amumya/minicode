@@ -1144,7 +1144,7 @@ details.traj-step > summary {
   gap: 4px;
 }
 
-/* 轨迹里的工具卡不要复用旧 .tool 的两列表格布局 */
+/* 轨迹工具卡不得复用旧 .tool 的两列表格布局 */
 .traj-item.tool {
   display: flex;
   flex-direction: column;

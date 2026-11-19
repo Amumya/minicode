@@ -166,7 +166,7 @@ def main() -> int:
 
         if method == "tools/list":
             if ERA == "legacy" and not initialized:
-                # 现代请求先到：明确告诉客户端"你该用旧版"
+                # 现代请求先到达：明确告知客户端应使用旧版本。
                 error(request_id, -32022, "unsupported protocol version",
                       {"supportedVersions": ["2025-06-18"]})
                 continue

@@ -104,7 +104,7 @@ def test_looks_loaded_accepts_page_title():
 
 
 def test_looks_loaded_rejects_blank_window_titles():
-    # 这就是实测出来的空白窗口标题
+    # 以下为实际出现过的空白窗口标题。
     assert not looks_loaded("127.0.0.1_/")
     assert not looks_loaded("localhost_/")
     assert not looks_loaded("")
@@ -119,7 +119,7 @@ def test_looks_loaded_rejects_host_only_title():
 
 
 def test_window_titles_returns_list():
-    # 不假设具体内容，只保证不炸
+    # 不校验具体内容，仅验证不抛出异常。
     assert isinstance(window_titles(set()), list)
 
 

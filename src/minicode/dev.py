@@ -88,7 +88,7 @@ def ensure_redis(root: Path, *, port: int = DEFAULT_REDIS_PORT,
 
     url = redis_url(port)
     if port_open("127.0.0.1", port):
-        # 端口在听还要确认是 Redis：否则会把别的服务当成缓存，现象离根因很远
+        # 端口已监听时仍需确认 Redis 身份；否则可能将其他服务误认为缓存，导致诊断困难。
         return None, (url if redis_alive(url) else None)
 
     server = find_bundled_redis(root)

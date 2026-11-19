@@ -26,6 +26,6 @@ def _never_touch_real_redis(monkeypatch):
     monkeypatch.delenv("MINICODE_WORKSPACE", raising=False)
     from minicode.service import app as app_module
 
-    # 每个测试一个干净的内存 store（不共享状态）
+    # 每个测试使用独立的内存 store，避免状态复用。
     monkeypatch.setattr(app_module, "default_store", lambda: InMemoryStore())
     yield

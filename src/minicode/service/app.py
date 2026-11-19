@@ -57,8 +57,8 @@ from minicode.tools import TodoList, build_registry
 
 ProviderFactory = Callable[[Settings], object]
 
-# 前端构建产物放在包旁边（web/vite.config.ts 里配的输出目录），
-# 这样不管是从源码跑还是装成包跑，路径都对得上。
+# 前端构建产物位于包目录旁（输出目录由 web/vite.config.ts 配置），
+# 无论从源码运行还是以安装包运行，路径均一致。
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
@@ -186,17 +186,23 @@ def create_app(
             response.headers["Cache-Control"] = "no-store, max-age=0"
         return response
 
-    # 每个 run 一个 asyncio.Event，用来叫醒 SSE 生成器。
-    # 放 dict 里是为了让 store 保持纯数据、不掺和异步。
+          
+# 每个 run 对应一个 asyncio.Event，用于唤醒 SSE 生成器。
+          
+# 使用独立字典存储，使 store 仅负责数据，不参与异步控制。
     changed: dict[str, asyncio.Event] = {}
 
-    # 本进程里正在跑的 run。用途：
-    #   1) 进程被杀之后，store 里那些 status=running 的 run 永远等不到 worker，
-    #      有了这份名单才能区分"真的在跑"和"僵尸" —— 僵尸允许 resume。
-    #   2) followup 不能挂到一个还在跑的 run 上（会从半截检查点分叉出并发 run）。
+      
+# 本进程内正在执行的 run，用于：
+      
+#   1) 进程终止后，store 中 status=running 的 run 不会再有 worker 处理；
+      
+#      通过该集合区分“正在执行”与“残留状态”，残留状态允许 resume。
+      
+#   2) followup 不得挂到正在执行的 run 上，否则会从半截检查点分叉出并发 run。
     active_runs: set[str] = set()
 
-    # 每个 run 一个取消信号，worker 每步开头看一眼
+    # 每个 run 一个取消信号；worker 在每步开始时检查。
     cancel_flags: dict[str, threading.Event] = {}
 
     def _factory(settings_obj: Settings):
@@ -305,7 +311,7 @@ def create_app(
             if todo is not None:
                 state.result["todos"] = todo.snapshot()
             if result.stop_reason == "provider_error":
-                # 模型调用本身挂了属于基础设施错误，和"跑完了但没成功"要分开：
+                # 模型调用失败属于基础设施错误，应与“执行完成但未成功”区分：
                 # 前者要标 error（界面会红），后者是 ok=False 的正常收尾。
                 state.error = result.error or "模型调用失败"
                 state.status = "error"
@@ -499,8 +505,8 @@ def create_app(
             raise HTTPException(404, "没有这个 run")
         if state.status == "running" and state.id in active_runs:
             raise HTTPException(409, "这个 run 还在跑，不用恢复")
-        # 走到这里说明状态是 running 但本进程没有它在跑 —— 进程被杀/重启留下的僵尸。
-        # 检查点在的话允许续跑，否则这个 run 永远救不回来。
+        # 状态为 running 但本进程无对应 worker，说明进程被终止或重启后遗留。
+        # 存在检查点则允许续跑；否则该 run 无法恢复。
         if state.status == "running":
             checkpoint = st.get_checkpoint(run_id)
             if checkpoint is None:
@@ -540,7 +546,7 @@ def create_app(
             raise HTTPException(409, f"这个 run 已经是 {state.status}，不用取消")
         flag = cancel_flags.get(run_id)
         if flag is None:
-            # 状态是 running 但没有本进程的 worker：僵尸，直接标成取消
+            # 状态为 running 但本进程无对应 worker：属于残留状态，直接标记为取消。
             state.status = "error"
             state.error = "已取消（没有活跃的 worker）"
             st.update(state)
@@ -611,7 +617,7 @@ def create_app(
         if parent is None:
             raise HTTPException(404, "没有这个 run")
         if parent.status in ("running", "queued") and parent.id in active_runs:
-            # 父 run 还在跑就续聊，会从半截检查点分叉出第二个 run，
+            # 父 run 仍在执行时续聊，会从半截检查点分叉出第二个 run，
             # 两个 run 共用同一个工作区和任务目录，互相覆盖。
             raise HTTPException(409, "上一轮还在跑，等它结束再接着聊")
 
@@ -665,13 +671,13 @@ def create_app(
             while True:
                 for ev in st.read_events(run_id, sent):
                     sent += 1
-                    # id 用事件序号，客户端重连时靠它告诉我们从哪继续
+                    # id 使用事件序号；客户端重连时据此确定续传起点。
                     yield (f"id: {sent - 1}\nevent: {ev['kind']}\n"
                            f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
                 fresh = st.get(run_id)
                 if fresh is not None and fresh.status in ("done", "error"):
-                    # 先把手上的事件补发干净：从"读事件"到"查状态"之间可能又追加了几条，
-                    # 直接发 end 会让客户端少最后几条（实测能丢 finish/model_call）。
+                    # 先发送已产生的事件：读取事件与查询状态之间可能新增事件，
+                    # 若直接发送 end，客户端会缺少最后几条事件（已验证可能丢失 finish/model_call）。
                     while True:
                         rest = st.read_events(run_id, sent)
                         if not rest:
@@ -680,7 +686,7 @@ def create_app(
                             sent += 1
                             yield (f"id: {sent - 1}\nevent: {ev['kind']}\n"
                                    f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
-                    # 收尾事件也必须和别的事件同一个形状（kind / ts / data）。
+                    # 收尾事件须与其他事件结构一致（kind / ts / data）。
                     # 之前这里直接发 {status, result, error}，少了外面那层，
                     # 前端就把它当普通事件渲染，结果画出一个空 JSON，
                     # 而且 showAnswer(ev.data) 拿到 undefined 直接抛 TypeError。

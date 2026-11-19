@@ -79,7 +79,7 @@ def test_interrupted_run_gets_checkpoint(tmp_path):
     # 检查点停在"最后一步真正执行完工具"的位置（不是被跳过的 max_steps 那一步）
     assert checkpoint["step"] == 1
     assert len(checkpoint["messages"]) >= 3  # user + assistant + tool_result
-    # 关键：不能把"[skipped] 步数已用尽"写进检查点，否则续跑时模型会直接总结
+    # 关键约束：不得将“[skipped] 步数已用尽”写入检查点，否则续跑时模型会直接总结。
     joined = repr(checkpoint["messages"])
     assert "[skipped]" not in joined
     assert checkpoint["messages"][-1]["role"] == "user"
@@ -103,13 +103,13 @@ def test_resume_finishes_the_run(tmp_path):
     client2 = _make_app(tmp_path, store, provider)
     resp = client2.post(f"/runs/{run_id}/resume", json={"max_steps": 6})
     assert resp.status_code == 202
-    # 检查点停在第 1 步；续跑从第 2 步开始
+    # 检查点停在第 1 步；续跑从第 2 步开始。
     assert resp.json()["resumed_from_step"] == 1
 
     body = _wait(client2, run_id)
     assert body["status"] == "done"
     assert body["result"]["final_text"] == "补完了"
-    # 续跑真的又执行了一次工具（不是直接总结），步数从 2 接着数
+    # 续跑实际再次执行了工具（非直接总结），步骤从 2 继续。
     assert body["result"]["steps"] == 3
     tool_calls = [e for e in store.read_events(run_id) if e["kind"] == "tool_call"]
     assert len(tool_calls) == 2  # 第 1 步的 t1 + 续跑第 2 步的 t3；t2 被截断没执行
@@ -199,7 +199,7 @@ def test_resume_drops_legacy_skipped_from_old_checkpoint(tmp_path):
     )
     assert result.ok
     assert len(seen) == 1
-    # 续跑第一次请求里，旧的 assistant tool_use / skipped 结果已经被丢掉
+    # 续跑首次请求中，旧的 assistant tool_use / skipped 结果已被移除。
     joined = repr(seen[0])
     assert "[skipped]" not in joined
     assert "t9" not in joined

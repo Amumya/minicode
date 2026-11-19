@@ -92,6 +92,6 @@ def test_delete_conversation_with_active_run_409(tmp_path):
         store=store, default_workspace=tmp_path,
     )
     client = TestClient(app)
-    # 状态 running 但本进程没有 worker：属于僵尸，允许删（避免卡死）
+    # 状态为 running 但本进程无对应 worker，属于残留状态；允许删除，避免状态长期阻塞。
     resp = client.delete("/conversations/run-active00001")
     assert resp.status_code in (200, 409)
