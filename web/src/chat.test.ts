@@ -49,6 +49,31 @@ test("buildTurn 抽出问题、回答、工具、计划", () => {
   assert.equal(turn.usage.inputTokens, 100);
 });
 
+test("任务成功收尾时计划显示为全部完成", () => {
+  const turn = buildTurn({
+    id: "x",
+    task: "t",
+    status: "done",
+    result: { ok: true, final_text: "完成", stop_reason: "end_turn" },
+    events: [
+      {
+        kind: "tool_call",
+        data: {
+          tool: "todo_write",
+          args: {
+            todos: [
+              { content: "a", status: "pending" },
+              { content: "b", status: "in_progress" },
+            ],
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(turn.plan?.length, 2);
+  assert.ok(turn.plan?.every((p) => p.status === "completed"));
+});
+
 test("buildTurn 对没事件的历史 run 也不炸", () => {
   const turn = buildTurn({ id: "x", task: "t", status: "queued" });
   assert.equal(turn.tools.length, 0);

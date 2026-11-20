@@ -60,7 +60,9 @@ export function describeEvent(ev: AgentEvent): Described {
     case "resume": {
       return {
         label: "恢复",
-        detail: `从第 ${num(d.from_step) ?? "?"} 步恢复（上限 ${num(d.max_steps) ?? "?"}）`,
+        detail: d.max_steps === 0
+    ? `从第 ${num(d.from_step) ?? "?"} 步恢复 · 不设步数上限`
+    : `从第 ${num(d.from_step) ?? "?"} 步恢复（上限 ${num(d.max_steps) ?? "?"}）`,
         tone: "info",
       };
     }

@@ -170,6 +170,49 @@ def test_resume_clears_previous_error(tmp_path):
 # ------------------------------------------------------------------ 请求上限
 
 
+def test_provider_factory_error_marks_run_error_not_stuck(tmp_path):
+    def boom(settings):
+        raise RuntimeError("boom")
+
+    store = RedisStore(client=fakeredis.FakeRedis(decode_responses=True))
+    app = create_app(
+        provider_factory=boom,
+        settings=Settings(api_key="fake", model="m", max_steps=3),
+        store=store,
+        default_workspace=tmp_path,
+    )
+    client = TestClient(app)
+    run_id = client.post("/runs", json={"task": "x"}).json()["id"]
+    body = _wait(client, run_id)
+    assert body["status"] == "error"
+    assert "boom" in (body.get("error") or "")
+    # 不再卡在 running：resume 是“没有检查点”的 409，而不是“还在跑”的 409
+    resp = client.post(f"/runs/{run_id}/resume", json={})
+    assert resp.status_code == 409
+    assert "检查点" in resp.json()["detail"]
+
+
+def test_resume_and_followup_require_api_key(tmp_path):
+    store = RedisStore(client=fakeredis.FakeRedis(decode_responses=True))
+    app = create_app(
+        provider_factory=None,
+        settings=Settings(api_key="", model="m", max_steps=3),
+        store=store,
+        default_workspace=tmp_path,
+    )
+    client = TestClient(app)
+    assert client.post("/runs", json={"task": "x"}).status_code == 400
+
+    run = RunState(id="run-nokey0001", task="t", model="m",
+                   workspace=str(tmp_path), status="done",
+                   result={"ok": False, "final_text": "", "steps": 1, "stop_reason": "max_steps"})
+    store.create(run)
+    store.save_checkpoint(run.id, {"messages": [{"role": "user", "content": "t"}],
+                                   "step": 1, "usage": {}})
+    assert client.post(f"/runs/{run.id}/resume", json={}).status_code == 400
+    assert client.post(f"/runs/{run.id}/followup", json={"text": "hi"}).status_code == 400
+
+
 def test_task_too_long_rejected(tmp_path):
     client, _ = _make(tmp_path)
     resp = client.post("/runs", json={"task": "x" * 20001})
@@ -178,8 +221,9 @@ def test_task_too_long_rejected(tmp_path):
 
 def test_max_steps_out_of_range(tmp_path):
     client, _ = _make(tmp_path)
-    assert client.post("/runs", json={"task": "x", "max_steps": 0}).status_code == 422
-    assert client.post("/runs", json={"task": "x", "max_steps": 999}).status_code == 422
+    assert client.post("/runs", json={"task": "x", "max_steps": 0}).status_code == 202
+    assert client.post("/runs", json={"task": "x", "max_steps": 999}).status_code == 202
+    assert client.post("/runs", json={"task": "x", "max_steps": -1}).status_code == 422
 
 
 def test_followup_text_too_long(tmp_path):

@@ -38,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from minicode import __version__
-from minicode.compact import CompactConfig, Compactor
+from minicode.compact import CompactConfig, Compactor, provider_summarizer
 from minicode.config import Settings
 from minicode.events import Event, Recorder
 from minicode.loop import run as run_loop
@@ -103,7 +103,7 @@ class RunRequest(BaseModel):
     task: str = Field(min_length=1, max_length=20000, description="任务内容")
     model: str | None = None
     workspace: str | None = None
-    max_steps: int | None = Field(default=None, ge=1, le=50)
+    max_steps: int | None = Field(default=None, ge=0)
     include_files: bool = False
     plan: bool = False
     skills: bool = False
@@ -116,7 +116,7 @@ class RunRequest(BaseModel):
 class FollowupRequest(BaseModel):
     """多轮对话：在某个已结束的 run 后面接着说一句。"""
     text: str = Field(min_length=1, max_length=8000)
-    max_steps: int | None = Field(default=None, ge=1, le=50)
+    max_steps: int | None = Field(default=None, ge=0)
 
 
 class CancelRequest(BaseModel):
@@ -125,7 +125,7 @@ class CancelRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    max_steps: int | None = Field(default=None, ge=1, le=50)
+    max_steps: int | None = Field(default=None, ge=0)
 
 
 def default_store() -> SessionStore:
@@ -240,29 +240,41 @@ def create_app(
             todo=TodoList() if state.plan else None,
             skills=_skills_for(state),
             tasks=_tasks_for(state),
+            compact=state.compact,
         )
 
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
                 resume: dict | None) -> None:
-        active_runs.add(state.id)
-        cancel_flags[state.id] = threading.Event()
         mcp_session = None
         mcp_servers: list[str] = []
-        state.status = "running"
-        st.update(state)
-        rec = Recorder(on_event=lambda ev: _emit(state, cs, ev, loop_ref))
-
-        def on_step(payload: dict) -> None:
-            try:
-                st.save_checkpoint(state.id, payload)
-            except Exception:  # noqa: BLE001 - 存检查点失败不能拖垮整个 run
-                pass
-
-        todo = TodoList() if state.plan else None
-        skills_loader = _skills_for(state)
-        compactor = Compactor(Path(state.workspace), CompactConfig()) if state.compact else None
-
+        # 所有可能抛异常的初始化都放进 try：任一步失败也要走 finally，
+        # 否则 run 永远停在 queued/running，active_runs 里留下僵尸 id。
         try:
+            active_runs.add(state.id)
+            cancel_flags[state.id] = threading.Event()
+            state.status = "running"
+            st.update(state)
+            rec = Recorder(on_event=lambda ev: _emit(state, cs, ev, loop_ref))
+
+            def on_step(payload: dict) -> None:
+                try:
+                    st.save_checkpoint(state.id, payload)
+                except Exception:  # noqa: BLE001 - 存检查点失败不能拖垮整个 run
+                    pass
+
+            todo = TodoList() if state.plan else None
+            skills_loader = _skills_for(state)
+            # provider 只建一次：摘要器和主循环共用同一个客户端，一次 run 里不该有两份连接。
+            run_provider = _factory(run_settings)
+            compactor = (
+                Compactor(
+                    Path(state.workspace),
+                    CompactConfig(),
+                    summarize=provider_summarizer(run_provider),
+                )
+                if state.compact else None
+            )
+
             mcp_tools: list = []
             if state.mcp:
                 from minicode.tools.mcp import connect_mcp
@@ -280,12 +292,13 @@ def create_app(
 
             result = run_loop(
                 state.task,
-                provider=_factory(run_settings),
+                provider=run_provider,
                 tools=build_registry(
                     files=state.include_files, todo=todo,
                     skills=skills_loader, tasks=_tasks_for(state),
                     extra=list(mcp_tools),
-                    memory=_memory_for(state)),
+                    memory=_memory_for(state),
+                    compact=state.compact),
                 settings=run_settings,
                 workspace=Path(state.workspace),
                 recorder=rec,
@@ -293,6 +306,7 @@ def create_app(
                     skills=skills_loader,
                     python_hint=sys.executable,
                     plan_hint=state.plan,
+                    compact_hint=state.compact,
                     tasks_hint=state.tasks,
                     mcp_servers=mcp_servers or None,
                     memory_hint=state.memory,
@@ -330,6 +344,9 @@ def create_app(
                 loop_ref.call_soon_threadsafe(cs.set)
             except RuntimeError:
                 pass
+            # 先唤醒等待者再 pop：等待者手里已有旧对象，pop 不影响它收到通知；
+            # 新来的 SSE 连接会 setdefault 出新的 Event。
+            changed.pop(state.id, None)
 
     def _start(state: RunState, run_settings: Settings, resume: dict | None) -> None:
         loop_ref = asyncio.get_running_loop()
@@ -348,7 +365,7 @@ def create_app(
             api_key=base.api_key,
             base_url=base.base_url,
             model=model or base.model,
-            max_steps=max_steps or base.max_steps,
+            max_steps=max_steps if max_steps is not None else base.max_steps,
         )
 
     @app.get("/healthz")
@@ -522,6 +539,8 @@ def create_app(
 
         run_settings = _resolve_settings(
             state.model, (req.max_steps if req else None))
+        if provider_factory is None and not run_settings.api_key:
+            raise HTTPException(400, "没有 API key，先把 .env 配好")
         state.status = "queued"
         state.result = None
         state.error = None
@@ -631,6 +650,8 @@ def create_app(
 
         messages = list(checkpoint["messages"]) + [{"role": "user", "content": text}]
         run_settings = _resolve_settings(parent.model, req.max_steps)
+        if provider_factory is None and not run_settings.api_key:
+            raise HTTPException(400, "没有 API key，先把 .env 配好")
 
         state = RunState(
             id=uuid.uuid4().hex[:12],
@@ -669,6 +690,9 @@ def create_app(
             sent = start_at
             yield "retry: 3000\n\n"
             while True:
+                # 先 clear 再读：worker 在“读事件”期间 set() 的通知会被下一轮 wait 消费，
+                # 不会像“读完再 clear”那样被抹掉，尾部事件最多延迟 15 秒。
+                cs.clear()
                 for ev in st.read_events(run_id, sent):
                     sent += 1
                     # id 使用事件序号；客户端重连时据此确定续传起点。
@@ -701,7 +725,6 @@ def create_app(
                     }
                     yield f"event: end\ndata: {json.dumps(tail, ensure_ascii=False)}\n\n"
                     return
-                cs.clear()
                 try:
                     await asyncio.wait_for(cs.wait(), timeout=15)
                 except asyncio.TimeoutError:

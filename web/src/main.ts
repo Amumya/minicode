@@ -420,7 +420,9 @@ function renderTrajectoryEntry(ev: AgentEvent): HTMLElement {
     }
     case "resume": {
       entry.append(h("div", { class: "traj-line" },
-        `从第 ${data.from_step ?? "?"} 步恢复 · 再给 ${data.max_steps ?? "?"} 步 · 目标到第 ${data.until_step ?? "?"} 步`));
+        data.max_steps === 0
+    ? `从第 ${data.from_step ?? "?"} 步恢复 · 不设步数上限`
+    : `从第 ${data.from_step ?? "?"} 步恢复 · 再给 ${data.max_steps ?? "?"} 步 · 目标到第 ${data.until_step ?? "?"} 步`));
       break;
     }
     case "mcp_ready": {
@@ -693,6 +695,8 @@ function tickLiveTimer(): void {
   const elapsed = formatElapsed(Date.now() - liveStartedAt);
   if (liveTimerEl) liveTimerEl.textContent = elapsed;
   if (liveStatusText) main.status.textContent = `${liveStatusText} · ${elapsed}`;
+  main.status.title = main.status.textContent;
+
 }
 
 function ensureLiveFooter(): void {
@@ -821,6 +825,7 @@ function renderChrome(): void {
   if (busy) {
     const elapsed = liveStartedAt ? ` · ${formatElapsed(Date.now() - liveStartedAt)}` : "";
     main.status.textContent = liveStatusText ? `${liveStatusText}${elapsed}` : "执行中…";
+    main.status.title = main.status.textContent;
   } else {
     liveStatusText = "";
   }

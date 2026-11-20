@@ -285,7 +285,7 @@ check("提交 body 带上了任务和开关",
   sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
   sentBody.include_files === true && sentBody.tasks === true &&
   sentBody.memory === true && sentBody.mcp === true);
-  check("提交时不携带 max_steps（由后端默认 20）", sentBody.max_steps === undefined,
+  check("提交时不携带 max_steps（由后端默认 0 = 不限）", sentBody.max_steps === undefined,
     String(sentBody.max_steps));
 
 const before = calls.filter((c) => c === "POST /runs").length;

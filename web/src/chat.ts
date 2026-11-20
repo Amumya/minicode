@@ -137,6 +137,7 @@ export function buildTurn(run: RunLike): Turn {
       }
     }
   }
+  const plan = latestPlan(events);
   return {
     runId: run.id,
     stopReason: typeof result.stop_reason === "string" ? result.stop_reason : "",
@@ -146,7 +147,9 @@ export function buildTurn(run: RunLike): Turn {
     answer,
     error: run.error ?? null,
     usage,
-    plan: latestPlan(events),
+    plan: plan && result.ok === true && result.stop_reason === "end_turn"
+      ? plan.map((it) => ({ ...it, status: "completed" as const }))
+      : plan,
     tools,
     thoughts,
     denied,

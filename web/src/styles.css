@@ -309,8 +309,9 @@ button {
 }
 
 #runStatus {
-  max-width: 32vw;
+  min-width: 0;
   flex: 0 1 auto;
+  max-width: min(30ch, 22vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -328,6 +329,10 @@ button {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
   white-space: nowrap;
+  min-width: 0;
+  max-width: 30vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ------------------------------------------------------------------ 对话流 */

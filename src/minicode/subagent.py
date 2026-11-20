@@ -63,7 +63,7 @@ def run_subagent(
     settings: Settings,
     workspace: Path,
     build_tools: Callable[[], Registry],
-    max_steps: int = 6,
+    max_steps: int = 64,
     system: str = "",
 ) -> SubagentReport:
     """跑一个独立的子任务。返回结论 + 花费，不返回中间过程。"""
@@ -113,7 +113,7 @@ class TaskTool:
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "交给子代理的完整交代"},
-            "max_steps": {"type": "integer", "description": "子代理最多几步，默认 6"},
+            "max_steps": {"type": "integer", "description": "子代理最多几步，默认 64"},
         },
         "required": ["prompt"],
     }
@@ -124,7 +124,7 @@ class TaskTool:
         provider,
         settings: Settings,
         build_tools: Callable[[], Registry],
-        max_steps: int = 6,
+        max_steps: int = 64,
         system: str = "",
     ) -> None:
         self.provider = provider

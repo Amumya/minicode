@@ -37,6 +37,7 @@ def default_system(
     skills=None,
     python_hint: str | None = None,
     plan_hint: bool = False,
+    compact_hint: bool = False,
     tasks_hint: bool = False,
     memory_hint: bool = False,
     memory_snapshot: str | None = None,
@@ -67,6 +68,14 @@ def default_system(
         text += (
             "\n\n任务超过两三步时，先用 todo_write 把计划写下来，"
             "每完成一步就更新清单的状态。"
+        )
+
+    # compact 工具同理：不写清「什么时候压、压完会丢什么」，它要么不调，要么在最不该压的时候调。
+    if compact_hint:
+        text += (
+            "\n\n上下文快满、或一个大阶段做完要开始查别的东西时，可以调 compact "
+            "把前面的历史整理成摘要。节奏上：手头还有没写完的改动时不要压，"
+            "阶段收尾、准备换方向时压最划算。"
         )
 
     if tasks_hint:

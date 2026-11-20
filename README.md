@@ -10,7 +10,7 @@ minicode 是一个面向工具调用型 coding agent 的工程化实现，使用
 1. **执行治理**：工具调用执行前经过统一权限判定，执行前后产生结构化审计事件；
 2. **效果评估**：任务是否完成由隐藏测试判定，不以模型自述为依据，并保留可复现的实验记录。
 
-当前包含 403 条 Python 测试、74 条前端测试和 77 项界面链路检查，CI 三个作业全部通过。
+当前包含 403 条 Python 测试、75 条前端测试和 77 项界面链路检查，CI 三个作业全部通过。
 
 > 仓库：`github.com/Amumya/minicode` · MIT · 本地运行，默认仅监听 `127.0.0.1`
 
@@ -276,7 +276,7 @@ minicode app --mode gui
 | 部分 | 数量 | 命令 |
 |---|---|---|
 | Python 测试 | 403 条 | `pytest`（无需 API key） |
-| 前端逻辑测试 | 74 条 | `npm --prefix web test` |
+| 前端逻辑测试 | 75 条 | `npm --prefix web test` |
 | 界面链路检查 | 77 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业：Python 3.11 / 3.12 / 前端 | `.github/workflows/ci.yml` |
 
@@ -309,8 +309,8 @@ curl.exe -sN http://127.0.0.1:8765/runs/<run_id>/events
 每条 `data` 为 JSON，`assistant_delta` 为流式文本增量。
 
 浏览器访问 `http://127.0.0.1:8765/` 即为界面。文件工具、计划、技能、压缩、任务图和
-记忆默认启用；前端固定使用默认 20 步，不提供步数修改入口。CLI 与 HTTP API 仍可通过
-`max_steps` 覆盖，服务端上限 50。
+记忆默认启用；前端固定使用 `max_steps=0`（不设步数上限），不提供步数修改入口。
+CLI 与 HTTP API 仍可通过 `max_steps` 显式设置；子代理默认 64 步。
 
 ### 访问令牌
 
@@ -410,7 +410,7 @@ tools/             开发辅助脚本（store 清理、并发压测）
 
 ## 评测与记录
 
-决策记录与实验数据见 [docs/取舍与证据.md](docs/取舍与证据.md)，共 79 条。
+决策记录与实验数据见 [docs/取舍与证据.md](docs/取舍与证据.md)，共 82 条。
 MCP 配置示例见 [docs/mcp.example.json](docs/mcp.example.json)。
 README 中的数字均可在决策记录或 `eval/runs/` 中找到出处。
 

@@ -6,7 +6,7 @@
 1. 工具调用执行前经过权限判定；被拒绝的调用不执行，但仍返回结构化结果，
    使模型能够识别调用失败的原因。
 2. 每次模型调用与工具调用均记录结构化事件；指标由事件计算，不解析日志文本。
-3. 设置 max_steps 上限，限制单次 run 的模型调用次数与成本。
+3. max_steps 设置步数预算；0 表示不设上限，防失控依赖取消与上下文压缩。
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ from minicode.compact import Compactor
 from minicode.hooks import POST_TOOL, PRE_TOOL, HookBus, HookContext, default_hooks
 from minicode.provider import ModelReply, Provider
 from minicode.tools.base import Registry, ToolResult
+from minicode.tools.compact import COMPACT_SIGNAL
+
+TODO_NAG_AFTER = 3  # 连续这么多轮没更新计划，就在工具结果里注入提醒
 
 def _default_system() -> str:
     """默认系统提示词统一从 prompts 生成，避免这里、prompts、子代理三处各写一份而发散。"""
@@ -102,6 +105,21 @@ def _drop_stale_skipped(messages: list[dict]) -> list[dict]:
     return cleaned
 
 
+# 服务端报「太长」的说法各家不一，这里统一认几种常见写法；认不出来就按普通错误处理。
+def _looks_too_long(exc: Exception) -> bool:
+    text = str(exc).lower()
+    markers = (
+        "prompt_too_long",
+        "too many tokens",
+        "context length",
+        "context_length",
+        "maximum context",
+        "input length",
+        "request too large",
+    )
+    return any(marker in text for marker in markers)
+
+
 def run(
     task: str,
     *,
@@ -137,14 +155,14 @@ def run(
         # max_steps 表示“追加步数”，而非绝对步号。
         # 若按绝对步号计算，检查点停在 max_steps 时续跑循环不会执行，
         # 直接返回 ok=False，表现为“继续跑”无响应。
-        end_step = start_step + max(1, settings.max_steps) - 1
+        end_step = None if settings.max_steps <= 0 else start_step + max(1, settings.max_steps) - 1
         usage_total.update(resume.get("usage") or {})
         rec.add("resume", from_step=start_step - 1,
                 max_steps=settings.max_steps, until_step=end_step)
     else:
         messages = [{"role": "user", "content": task}]
         start_step = 1
-        end_step = settings.max_steps
+        end_step = None if settings.max_steps <= 0 else settings.max_steps
 
     # 未传入时使用默认钩子（仅包含权限钩子）；传入时使用调用方提供的钩子，便于测试与扩展。
     bus = hooks if hooks is not None else default_hooks()
@@ -154,8 +172,15 @@ def run(
     n_calls = 0      # 实际发起的工具调用次数（并行算多次）
     n_denied = 0
     n_models = 0     # 模型调用次数
+    rounds_since_todo = 0  # 连续多少轮没有调用 todo_write
+    # 当前请求在整轮里不变：压缩用它当「指令来源」，摘要里的其他内容都只是参考数据。
+    active_request = task
 
-    for step in range(start_step, end_step + 1):
+    step = start_step - 1
+    while True:
+        step += 1
+        if end_step is not None and step > end_step:
+            break
         # 取消检查：每步开始时检查一次。已发起的模型调用无法中断，
         # 但其返回后将在此处终止，不再执行工具或发起下一次请求。
         if should_stop is not None and should_stop():
@@ -177,9 +202,9 @@ def run(
          
 # 检查点保存的同样是压缩后的内容，确保恢复后发送的内容与中断前一致。
         if compactor is not None:
-            messages, cstats = compactor.compact(messages)
+            messages, cstats = compactor.prepare(messages, active_request)
             if cstats.changed:
-                rec.add("compact", step=step, **cstats.as_dict())
+                rec.add("compact", step=step, reason="budget", **cstats.as_dict())
 
         # 流式：把模型吐字的过程变成事件，界面就能逐字显示。
         # 不是每个 provider 都支持（测试里的假 provider 就没有），所以用 getattr 探测。
@@ -200,28 +225,39 @@ def run(
             delta_buffer.append(chunk)
             _flush_delta()
 
-        try:
-            stream_fn = getattr(provider, "stream", None)
-            if callable(stream_fn):
-                reply = stream_fn(system, messages, tools.schemas(), _on_text)
-                _flush_delta(force=True)
-            else:
-                reply = provider.complete(system, messages, tools.schemas())
-        except Exception as exc:  # noqa: BLE001 - 网络/API 异常不能让整个进程挂掉
-            rec.add("finish", step=step, ok=False, reason="provider_error")
-            if on_step is not None:
-                # 消息未变化，保留检查点以支持续跑。
-                on_step({"messages": messages, "step": step - 1, "usage": usage_total})
-            return RunResult(
-                ok=False,
-                final_text="",
-                steps=step,
-                stop_reason="provider_error",
-                usage=usage_total,
-                tool_calls=n_calls,
-                denied=n_denied,
-                error=f"{type(exc).__name__}: {exc}",
-            )
+        # 反应式压缩需要一个「重试一次」的机会，所以把调用包在循环里：报太长 -> 摘要 -> 再来。
+        reactive_used = False
+        while True:
+            try:
+                stream_fn = getattr(provider, "stream", None)
+                if callable(stream_fn):
+                    reply = stream_fn(system, messages, tools.schemas(), _on_text)
+                    _flush_delta(force=True)
+                else:
+                    reply = provider.complete(system, messages, tools.schemas())
+                break
+            except Exception as exc:  # noqa: BLE001 - 网络/API 异常不能让整个进程挂掉
+                # 服务端说上下文太长时，先做一次反应式摘要再重试；只给一次机会，避免死循环烧钱。
+                if compactor is not None and not reactive_used and _looks_too_long(exc):
+                    reactive_used = True
+                    delta_buffer.clear()
+                    messages, cstats = compactor.reactive_compact(messages, active_request)
+                    rec.add("compact", step=step, reason="reactive", **cstats.as_dict())
+                    continue
+                rec.add("finish", step=step, ok=False, reason="provider_error")
+                if on_step is not None:
+                    # 消息未变化，保留检查点以支持续跑。
+                    on_step({"messages": messages, "step": step - 1, "usage": usage_total})
+                return RunResult(
+                    ok=False,
+                    final_text="",
+                    steps=step,
+                    stop_reason="provider_error",
+                    usage=usage_total,
+                    tool_calls=n_calls,
+                    denied=n_denied,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
         n_models += 1
         for k in usage_total:
             usage_total[k] += reply.usage.get(k, 0)
@@ -255,7 +291,7 @@ def run(
         # **不能**把这一轮的 assistant tool_use 和假 tool_result 写进 messages/检查点：
         # 续跑时模型若看到 [skipped] 步数已用尽，会直接总结收尾（已知问题）。
         # 检查点应保持“上一步工具结果已补齐”的状态，使续跑从该状态重新调用模型。
-        if step == end_step and reply.tool_calls:
+        if end_step is not None and step == end_step and reply.tool_calls:
             if on_step is not None:
                 on_step({"messages": messages, "step": step - 1, "usage": usage_total})
             rec.add("finish", step=step, ok=False, reason="max_steps")
@@ -291,6 +327,8 @@ def run(
             )
 
         results: list[dict] = []
+        # 本批工具里有没有人请求压缩：工具只发信号，压缩在结果补齐之后由主循环执行（工具拿不到 messages）。
+        compact_requested = False
         for tc in reply.tool_calls:
             n_calls += 1
             ctx = HookContext(
@@ -347,6 +385,9 @@ def run(
                     f"工具内部错误（{type(exc).__name__}）：{exc}",
                     exit_code=1,
                 )
+            # compact 工具不改消息，只在 meta 上打标记；真正的压缩放到结果补齐之后。
+            if tool_result.meta.get(COMPACT_SIGNAL):
+                compact_requested = True
             rec.add(
                 "tool_call",
                 step=step,
@@ -380,7 +421,19 @@ def run(
                 }
             )
 
+        used_todo = any(tc.name == "todo_write" for tc in reply.tool_calls)
+        rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
+        if rounds_since_todo >= TODO_NAG_AFTER:
+            results.append(
+                {"type": "text",
+                 "text": "<reminder>该更新计划了：用 todo_write 把已完成条目标成 completed。</reminder>"}
+            )
         messages.append({"role": "user", "content": results})
+
+        # 模型主动要求压缩：等这批结果补齐再压，否则会把刚拿到的结果压掉、还留下孤儿 tool_result。
+        if compact_requested and compactor is not None:
+            messages, cstats = compactor.compact_history(messages, active_request)
+            rec.add("compact", step=step, reason="tool", **cstats.as_dict())
 
         # 工具结果补齐之后才存检查点，见上面 on_step 的说明
         if on_step is not None:

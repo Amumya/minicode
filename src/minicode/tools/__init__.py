@@ -11,6 +11,7 @@ from __future__ import annotations
 from minicode.skills import SkillLoader
 from minicode.tools.base import Registry, ToolResult
 from minicode.tools.bash import BashTool
+from minicode.tools.compact import CompactTool
 from minicode.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from minicode.tools.memory import memory_tools
 from minicode.tools.skills import LoadSkillTool
@@ -27,6 +28,7 @@ __all__ = [
     "TodoList",
     "TodoWriteTool",
     "LoadSkillTool",
+    "CompactTool",
     "build_registry",
     "default_registry",
 ]
@@ -40,6 +42,7 @@ def build_registry(
     tasks=None,
     memory=None,
     extra: list | None = None,
+    compact: bool = False,
 ) -> Registry:
     reg = Registry()
     reg.add(BashTool())
@@ -59,6 +62,9 @@ def build_registry(
             reg.add(tool)
     for tool in extra or []:
         reg.add(tool)
+    # compact 工具必须和 compactor 同生共死：没开压缩却挂一个「请求压缩」的工具，模型会调一个空操作。
+    if compact:
+        reg.add(CompactTool())
     return reg
 
 

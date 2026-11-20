@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from minicode import __version__
-from minicode.compact import CompactConfig, Compactor
+from minicode.compact import CompactConfig, Compactor, provider_summarizer
 from minicode.config import Settings
 from minicode.events import Recorder
 from minicode.memory import MemoryStore
@@ -49,10 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--no-python-hint", action="store_true",
                    help="不告诉 agent 该用哪个 Python 解释器（对照实验用）")
     r.add_argument("--compact", action="store_true",
-                   help="开启上下文压缩（大工具输出落盘、旧结果截断、剪掉最早整对）")
+                   help="开启上下文压缩（按预算逐级：落盘、归档、瘦身，最后模型摘要）")
     r.add_argument("--subagent", action="store_true",
                    help="挂上 task 工具，可以派子代理去做独立子任务（上下文隔离）")
-    r.add_argument("--subagent-steps", type=int, default=6,
+    r.add_argument("--subagent-steps", type=int, default=64,
                    help="子代理的步数上限，默认 6")
     r.add_argument("--tasks", action="store_true",
                    help="挂上任务图工具（建/改/列/查/认领/完成），带依赖和环检测")
@@ -60,8 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="挂上长期记忆工具（remember / recall / forget），存 .minicode/memory.jsonl")
     r.add_argument("--mcp", action="store_true",
                    help="连 .minicode/mcp.json 里启用的 MCP server，只暴露 allow 里列出的工具")
-    r.add_argument("--compact-max-chars", type=int, default=4000,
-                   help="单个工具结果超过多少字符就落盘（默认 4000）")
+    r.add_argument("--compact-budget", type=int, default=100000,
+                   help="上下文硬预算（字符），只有超过才触发瘦身/摘要（默认 100000）")
+    r.add_argument("--compact-max-chars", type=int, default=30000,
+                   help="单条工具结果超过多少字符就落盘（默认 30000）")
     r.add_argument("--compact-keep", type=int, default=3,
                    help="最近几个工具结果保留全文（默认 3）")
 
@@ -142,11 +144,17 @@ def cmd_run(args, provider_factory=None) -> int:
         print(f"初始化模型客户端失败: {exc}", file=sys.stderr)
         return 2
 
+    # 摘要器由 provider 包出来注入：Compactor 不认识 Provider，离线测试可以塞一个纯函数。
     compactor = (
-        Compactor(workspace, CompactConfig(
-            max_tool_result_chars=args.compact_max_chars,
-            keep_recent_tool_results=args.compact_keep,
-        ))
+        Compactor(
+            workspace,
+            CompactConfig(
+                context_char_limit=args.compact_budget,
+                max_tool_result_chars=args.compact_max_chars,
+                keep_recent_results=args.compact_keep,
+            ),
+            summarize=provider_summarizer(provider),
+        )
         if args.compact else None
     )
     skills_loader = SkillLoader(workspace / args.skills) if args.skills else None
@@ -179,7 +187,8 @@ def cmd_run(args, provider_factory=None) -> int:
         if not mcp_session.tools:
             print("[mcp] 没有可用的 MCP 工具（检查 enabled 和 allow）", file=sys.stderr)
     tools = build_registry(files=args.files, todo=todo, skills=skills_loader,
-                           tasks=task_store, memory=memory, extra=extra_tools)
+                           tasks=task_store, memory=memory, extra=extra_tools,
+                           compact=args.compact)
 
     rec = Recorder()
     started = time.time()
@@ -195,6 +204,7 @@ def cmd_run(args, provider_factory=None) -> int:
             skills=skills_loader,
             python_hint=None if args.no_python_hint else sys.executable,
             plan_hint=args.plan,
+            compact_hint=args.compact,
             tasks_hint=task_store is not None,
             memory_hint=memory is not None,
             memory_snapshot=(memory.snapshot(args.task) if memory is not None else None),
