@@ -10,7 +10,7 @@ minicode 是一个面向工具调用型 coding agent 的工程化实现，使用
 1. **执行治理**：工具调用执行前经过统一权限判定，执行前后产生结构化审计事件；
 2. **效果评估**：任务是否完成由隐藏测试判定，不以模型自述为依据，并保留可复现的实验记录。
 
-当前包含 416 条 Python 测试、77 条前端测试和 77 项界面链路检查，CI 三个作业全部通过。
+当前包含 416 条 Python 测试、78 条前端测试和 77 项界面链路检查，CI 三个作业全部通过。
 
 > 仓库：`github.com/Amumya/minicode` · MIT · 本地运行，默认仅监听 `127.0.0.1`
 
@@ -276,7 +276,7 @@ minicode app --mode gui
 | 部分 | 数量 | 命令 |
 |---|---|---|
 | Python 测试 | 416 条 | `pytest`（无需 API key） |
-| 前端逻辑测试 | 77 条 | `npm --prefix web test` |
+| 前端逻辑测试 | 78 条 | `npm --prefix web test` |
 | 界面链路检查 | 77 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业：Python 3.11 / 3.12 / 前端 | `.github/workflows/ci.yml` |
 
@@ -410,7 +410,7 @@ tools/             开发辅助脚本（store 清理、并发压测）
 
 ## 评测与记录
 
-决策记录与实验数据见 [docs/取舍与证据.md](docs/取舍与证据.md)，共 83 条。
+决策记录与实验数据见 [docs/取舍与证据.md](docs/取舍与证据.md)，共 84 条。
 MCP 配置示例见 [docs/mcp.example.json](docs/mcp.example.json)。
 README 中的数字均可在决策记录或 `eval/runs/` 中找到出处。
 

@@ -147,7 +147,7 @@ export function buildTurn(run: RunLike): Turn {
     answer,
     error: run.error ?? null,
     usage,
-    plan: plan && result.ok === true && result.stop_reason === "end_turn"
+    plan: plan && (result.ok === true || result.stop_reason === "max_tokens")
       ? plan.map((it) => ({ ...it, status: "completed" as const }))
       : plan,
     tools,

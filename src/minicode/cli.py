@@ -117,6 +117,7 @@ def _resolve_settings(args, workspace: Path) -> Settings:
         base_url=base.base_url,
         model=args.model or base.model,
         max_steps=args.max_steps or base.max_steps,
+        max_tokens=base.max_tokens,
     )
 
 

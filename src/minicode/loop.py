@@ -25,7 +25,7 @@ from minicode.provider import ModelReply, Provider
 from minicode.tools.base import Registry, ToolResult
 from minicode.tools.compact import COMPACT_SIGNAL
 
-TODO_NAG_AFTER = 3  # 连续这么多轮没更新计划，就在工具结果里注入提醒
+TODO_NAG_AFTER = 2  # 连续这么多轮没更新计划，就在工具结果里注入提醒
 
 def _default_system() -> str:
     """默认系统提示词统一从 prompts 生成，避免这里、prompts、子代理三处各写一份而发散。"""

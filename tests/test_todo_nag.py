@@ -43,9 +43,9 @@ def test_reminder_injected_after_three_rounds(tmp_path: Path):
     run("跑四轮", provider=provider, tools=default_registry(),
         settings=Settings(api_key="fake", model="m", max_steps=8),
         workspace=tmp_path)
-    # 第 1、2 轮的模型输入里没有提醒；第 3、4 轮开始出现
+    # 第 1 轮没有提醒；连续第 2 轮没更新就开始注入
     assert "该更新计划" not in _last_user(provider.calls[1])
-    assert "该更新计划" not in _last_user(provider.calls[2])
+    assert "该更新计划" in _last_user(provider.calls[2])
     assert "该更新计划" in _last_user(provider.calls[3])
     assert "该更新计划" in _last_user(provider.calls[4])
 
@@ -65,7 +65,7 @@ def test_todo_write_resets_counter(tmp_path: Path):
     run("更新一次计划", provider=provider, tools=default_registry(),
         settings=Settings(api_key="fake", model="m", max_steps=8),
         workspace=tmp_path)
-    # 第 1 轮调了 todo_write → 计数器清零；第 2、3 轮不提醒，第 4 轮（连续 3 轮没更新）提醒
+    # 第 1 轮调了 todo_write → 计数器清零；第 2 轮不提醒，第 3 轮（连续 2 轮没更新）提醒
     assert "该更新计划" not in _last_user(provider.calls[2])
-    assert "该更新计划" not in _last_user(provider.calls[3])
+    assert "该更新计划" in _last_user(provider.calls[3])
     assert "该更新计划" in _last_user(provider.calls[4])

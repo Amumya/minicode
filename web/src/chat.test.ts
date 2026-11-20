@@ -49,6 +49,23 @@ test("buildTurn 抽出问题、回答、工具、计划", () => {
   assert.equal(turn.usage.inputTokens, 100);
 });
 
+test("max_tokens 截断收尾时计划也显示为全部完成", () => {
+  const turn = buildTurn({
+    id: "y",
+    task: "t",
+    status: "done",
+    result: { ok: false, final_text: "被截断的总结", stop_reason: "max_tokens" },
+    events: [
+      {
+        kind: "tool_call",
+        data: { tool: "todo_write", args: { todos: [{ content: "a", status: "pending" }] } },
+      },
+    ],
+  });
+  assert.equal(turn.plan?.length, 1);
+  assert.ok(turn.plan?.every((p) => p.status === "completed"));
+});
+
 test("任务成功收尾时计划显示为全部完成", () => {
   const turn = buildTurn({
     id: "x",

@@ -30,6 +30,7 @@ class Settings:
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     max_steps: int = 0
+    max_tokens: int = 8192
 
     @classmethod
     def from_env(cls, env_file: Path | None = None) -> "Settings":
@@ -40,6 +41,7 @@ class Settings:
             base_url=os.environ.get("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL),
             model=os.environ.get("DEEPSEEK_MODEL", DEFAULT_MODEL),
             max_steps=int(os.environ.get("MAX_STEPS", "0")),
+            max_tokens=int(os.environ.get("MAX_OUTPUT_TOKENS", "8192")),
         )
 
     def require_key(self) -> str:

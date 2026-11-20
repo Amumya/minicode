@@ -37,14 +37,14 @@ class Provider(Protocol):
 
 
 class AnthropicProvider:
-    def __init__(self, settings: Settings, max_tokens: int = 2048) -> None:
+    def __init__(self, settings: Settings, max_tokens: int | None = None) -> None:
         import anthropic  # 延迟导入：跑不联网的测试时不需要装
 
         self._client = anthropic.Anthropic(
             api_key=settings.require_key(), base_url=settings.base_url
         )
         self.model = settings.model
-        self.max_tokens = max_tokens
+        self.max_tokens = max_tokens if max_tokens is not None else getattr(settings, "max_tokens", 8192)
 
     def _request_kwargs(self, system: str, messages: list[dict], tools: list[dict]) -> dict:
         kwargs: dict = {

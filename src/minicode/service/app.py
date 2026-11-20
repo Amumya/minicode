@@ -358,6 +358,7 @@ def create_app(
             base_url=base.base_url,
             model=model or base.model,
             max_steps=max_steps if max_steps is not None else base.max_steps,
+            max_tokens=base.max_tokens,
         )
 
     @app.get("/healthz")
