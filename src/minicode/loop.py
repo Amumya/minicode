@@ -241,6 +241,8 @@ def run(
                 if compactor is not None and not reactive_used and _looks_too_long(exc):
                     reactive_used = True
                     delta_buffer.clear()
+                    # 前端已经画出的半截文字作废：发一个重置事件，重试的输出从头开始。
+                    rec.add("stream_reset", step=step)
                     messages, cstats = compactor.reactive_compact(messages, active_request)
                     rec.add("compact", step=step, reason="reactive", **cstats.as_dict())
                     continue
@@ -259,8 +261,9 @@ def run(
                     error=f"{type(exc).__name__}: {exc}",
                 )
         n_models += 1
-        for k in usage_total:
-            usage_total[k] += reply.usage.get(k, 0)
+        for k, v in (reply.usage or {}).items():
+            if isinstance(v, (int, float)):
+                usage_total[k] = usage_total.get(k, 0) + v
         rec.add(
             "model_call",
             step=step,

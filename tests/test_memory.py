@@ -220,3 +220,22 @@ def test_api_memory_endpoint(tmp_path):
     assert client.delete(f"/memory/{entry.id}").status_code == 200
     assert client.get("/memory").json()["total"] == 0
     assert client.delete("/memory/nope").status_code == 404
+
+
+
+def test_long_entries_with_shared_prefix_are_not_deduped(tmp_path):
+    store = MemoryStore(tmp_path / "memory.jsonl")
+    _, added_a = store.add("x" * 500 + "A")
+    _, added_b = store.add("x" * 500 + "B")
+    assert added_a and added_b
+    assert len(store.entries()) == 2
+
+
+def test_duplicate_add_merges_new_tags(tmp_path):
+    store = MemoryStore(tmp_path / "memory.jsonl")
+    first, _ = store.add("记住：测试用 .venv 的 python", tags=["pytest"])
+    again, added = store.add("记住：测试用 .venv 的 python", tags=["env"])
+    assert not added
+    assert again.id == first.id
+    entry = store.entries()[0]
+    assert set(entry.tags) == {"pytest", "env"}

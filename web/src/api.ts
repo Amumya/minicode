@@ -182,6 +182,7 @@ export const EVENT_KINDS = [
   "thinking",
   "tool_call",
   "assistant_delta",
+  "stream_reset",
   "denied",
   "unknown_tool",
   "hook_error",

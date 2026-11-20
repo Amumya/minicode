@@ -625,6 +625,7 @@ interface LiveView {
   answerEl: HTMLElement;
   deltaText: string;
   answerStep: number | null;
+  stepStart: number;
 }
 
 let liveView: LiveView | null = null;
@@ -645,6 +646,7 @@ function buildLiveTurn(turn: Turn): { el: HTMLElement; view: LiveView } {
     usageEl,
     answerEl,
     deltaText: "",
+    stepStart: 0,
     answerStep: null,
   };
   return { el: wrap, view };
@@ -763,7 +765,12 @@ function applyLiveEvent(ev: AgentEvent): void {
     const stepNo = numOf(ev, "step") ?? null;
     if (view.deltaText && stepNo !== view.answerStep) view.deltaText += "\n\n";
     view.answerStep = stepNo;
+    view.stepStart = view.deltaText.length;
     view.deltaText += textOf(ev, "text");
+    renderLiveAnswer(view);
+  } else if (ev.kind === "stream_reset") {
+    // 重试：把当前这步已经画出的半截文字作废，从头开始。
+    if (typeof view.stepStart === "number") view.deltaText = view.deltaText.slice(0, view.stepStart);
     renderLiveAnswer(view);
   } else if (ev.kind === "tool_call") {
     renderLivePlan(view, latestPlan(liveEvents));

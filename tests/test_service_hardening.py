@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from minicode.config import Settings
-from minicode.provider import ModelReply
+from minicode.provider import ModelReply, ToolCall
 from minicode.service import create_app
 from minicode.service.store import RedisStore, RunState
 
@@ -235,3 +235,38 @@ def test_followup_text_too_long(tmp_path):
                                    "step": 1, "usage": {}})
     resp = client.post(f"/runs/{run.id}/followup", json={"text": "x" * 8001})
     assert resp.status_code == 422
+
+
+
+def test_running_status_refreshed_in_redis(tmp_path):
+    """worker 每步把 updated_at 心跳写回 Redis，列表排序不会停在开始时间。"""
+    class SlowProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, system, messages, tools):
+            self.calls += 1
+            time.sleep(0.4)
+            if self.calls == 1:
+                return ModelReply(
+                    tool_calls=[ToolCall(id="t1", name="bash",
+                                         arguments={"command": "echo hi"})],
+                    stop_reason="tool_use",
+                    usage={"input_tokens": 1, "output_tokens": 1},
+                )
+            return ModelReply(text="done", stop_reason="end_turn",
+                              usage={"input_tokens": 1, "output_tokens": 1})
+
+    store = RedisStore(client=fakeredis.FakeRedis(decode_responses=True))
+    app = create_app(
+        provider_factory=lambda s: SlowProvider(),
+        settings=Settings(api_key="fake", model="m", max_steps=3),
+        store=store,
+        default_workspace=tmp_path,
+    )
+    client = TestClient(app)
+    run_id = client.post("/runs", json={"task": "x"}).json()["id"]
+    initial = store.get(run_id).updated_at
+    body = _wait(client, run_id, timeout=10)
+    assert body["status"] == "done"
+    assert store.get(run_id).updated_at >= initial + 0.4

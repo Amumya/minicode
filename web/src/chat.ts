@@ -212,6 +212,12 @@ export function mergeDeltaEvents(events: AgentEvent[]): AgentEvent[] {
       buffer.push(String(rec(ev.data).text ?? ""));
       continue;
     }
+    if (ev.kind === "stream_reset") {
+      // 失败的半截增量作废，重试的输出从头开始累计。
+      buffer = [];
+      out.push(ev);
+      continue;
+    }
     flush();
     out.push(ev);
   }

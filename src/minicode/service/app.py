@@ -234,15 +234,6 @@ def create_app(
             return None
         return MemoryStore(Path(state.workspace) / ".minicode" / "memory.jsonl")
 
-    def _tools_for(state: RunState):
-        return build_registry(
-            files=state.include_files,
-            todo=TodoList() if state.plan else None,
-            skills=_skills_for(state),
-            tasks=_tasks_for(state),
-            compact=state.compact,
-        )
-
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
                 resume: dict | None) -> None:
         mcp_session = None
@@ -261,6 +252,7 @@ def create_app(
                     st.save_checkpoint(state.id, payload)
                 except Exception:  # noqa: BLE001 - 存检查点失败不能拖垮整个 run
                     pass
+                st.update(state)
 
             todo = TodoList() if state.plan else None
             skills_loader = _skills_for(state)
@@ -350,8 +342,8 @@ def create_app(
 
     def _start(state: RunState, run_settings: Settings, resume: dict | None) -> None:
         loop_ref = asyncio.get_running_loop()
-        cs = asyncio.Event()
-        changed[state.id] = cs
+        # 复用已有 Event：resume 时旧的 SSE 连接还在等它，覆盖掉会让旧连接错过唤醒。
+        cs = changed.setdefault(state.id, asyncio.Event())
         threading.Thread(
             target=_worker,
             args=(state, cs, loop_ref, run_settings, resume),
@@ -410,7 +402,7 @@ def create_app(
         items = []
         default = str(base_workspace)
         ordered = [default] + [p for p in seen if p != default]
-        for path in ordered[: max(1, limit)]:
+        for path in ordered[: max(0, limit)]:
             p = Path(path)
             items.append({
                 "path": path,
@@ -427,12 +419,13 @@ def create_app(
     @app.get("/memory")
     def list_memory(workspace: str | None = None, limit: int = 50) -> dict:
         """读某个工作区的长期记忆（界面右栏用）。"""
-        store = MemoryStore(_memory_path(workspace))
+        ws = _resolve_workspace(workspace).resolve()
+        store = MemoryStore(ws / ".minicode" / "memory.jsonl")
         entries = store.entries()
         entries.sort(key=lambda e: e.created_at, reverse=True)
-        picked = entries[: max(1, min(limit, 200))]
+        picked = entries[: max(0, min(limit, 200))]
         return {
-            "workspace": str(_resolve_workspace(workspace).resolve()),
+            "workspace": str(ws),
             "total": len(entries),
             "entries": [e.to_dict() for e in picked],
         }
@@ -440,7 +433,8 @@ def create_app(
     @app.delete("/memory/{entry_id}")
     def delete_memory(entry_id: str, workspace: str | None = None) -> dict:
         """删一条记忆（记错了/过时了要能清）。"""
-        store = MemoryStore(_memory_path(workspace))
+        ws = _resolve_workspace(workspace).resolve()
+        store = MemoryStore(ws / ".minicode" / "memory.jsonl")
         if not store.forget(entry_id):
             raise HTTPException(404, "没有这条记忆")
         return {"id": entry_id, "deleted": True}
@@ -489,7 +483,7 @@ def create_app(
                 "turns": len(members),
             })
         out.sort(key=lambda c: c["updated_at"], reverse=True)
-        return {"conversations": out[: max(1, limit)]}
+        return {"conversations": out[: max(0, limit)]}
 
     @app.post("/runs", status_code=202)
     async def create_run(req: RunRequest) -> dict:

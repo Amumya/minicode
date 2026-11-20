@@ -74,7 +74,19 @@ test("任务成功收尾时计划显示为全部完成", () => {
   assert.ok(turn.plan?.every((p) => p.status === "completed"));
 });
 
-test("buildTurn 对没事件的历史 run 也不炸", () => {
+test("buildTurn 对没事件的历史 run 也不炸", () => {test("mergeDeltaEvents 在 stream_reset 后丢弃失败的半截增量", () => {
+  const events: AgentEvent[] = [
+    { kind: "assistant_delta", data: { text: "半截" } },
+    { kind: "stream_reset", data: {} },
+    { kind: "assistant_delta", data: { text: "完整回答" } },
+  ];
+  const merged = mergeDeltaEvents(events);
+  const deltas = merged.filter((e) => e.kind === "assistant_delta");
+  assert.equal(deltas.length, 1);
+  assert.equal((deltas[0].data as { text?: string }).text, "完整回答");
+});
+
+
   const turn = buildTurn({ id: "x", task: "t", status: "queued" });
   assert.equal(turn.tools.length, 0);
   assert.equal(turn.answer, "");

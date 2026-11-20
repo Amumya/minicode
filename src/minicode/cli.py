@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -192,28 +193,37 @@ def cmd_run(args, provider_factory=None) -> int:
 
     rec = Recorder()
     started = time.time()
-    result = run_loop(
-        args.task,
-        provider=provider,
-        tools=tools,
-        settings=settings,
-        workspace=workspace,
-        recorder=rec,
-        compactor=compactor,
-        system=args.system or default_system(
-            skills=skills_loader,
-            python_hint=None if args.no_python_hint else sys.executable,
-            plan_hint=args.plan,
-            compact_hint=args.compact,
-            tasks_hint=task_store is not None,
-            memory_hint=memory is not None,
-            memory_snapshot=(memory.snapshot(args.task) if memory is not None else None),
-            mcp_servers=mcp_servers or None,
-        ),
-    )
-    if mcp_session is not None:
-        mcp_session.close()
-        mcp_session = None
+    # Ctrl-C 只插旗，让当前这步跑完再收尾；MCP 子进程交给 finally 关。
+    stop_flag = threading.Event()
+    try:
+        result = run_loop(
+            args.task,
+            provider=provider,
+            tools=tools,
+            settings=settings,
+            workspace=workspace,
+            recorder=rec,
+            compactor=compactor,
+            system=args.system or default_system(
+                skills=skills_loader,
+                python_hint=None if args.no_python_hint else sys.executable,
+                plan_hint=args.plan,
+                compact_hint=args.compact,
+                tasks_hint=task_store is not None,
+                memory_hint=memory is not None,
+                memory_snapshot=(memory.snapshot(args.task) if memory is not None else None),
+                mcp_servers=mcp_servers or None,
+            ),
+            should_stop=stop_flag.is_set,
+        )
+    except KeyboardInterrupt:
+        stop_flag.set()
+        print("已中断（Ctrl-C）。", file=sys.stderr)
+        return 130
+    finally:
+        if mcp_session is not None:
+            mcp_session.close()
+            mcp_session = None
 
     elapsed = time.time() - started
 

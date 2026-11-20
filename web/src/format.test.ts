@@ -3,6 +3,11 @@ import test from "node:test";
 
 import { clip, describeEvent, formatTime, summarizeResult } from "./format.ts";
 
+test("stream_reset 事件有说明", () => {
+  const d = describeEvent({ kind: "stream_reset", data: {} });
+  assert.equal(d.label, "流式重试");
+});
+
 test("start 显示模型和工具", () => {
   const d = describeEvent({
     kind: "start",

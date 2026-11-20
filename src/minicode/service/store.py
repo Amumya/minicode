@@ -99,7 +99,15 @@ class InMemoryStore:
         self._runs[run.id] = run
         self._events.setdefault(run.id, [])
         while len(self._runs) > self._limit:
-            oldest = next(iter(self._runs))
+            # 不淘汰正在执行的 run：worker 还会继续往它写事件，
+            # 挤掉之后会造出孤儿 key、SSE 客户端中途拿 404。
+            oldest = next(
+                (rid for rid, run in self._runs.items()
+                 if run.status not in ("running", "queued")),
+                None,
+            )
+            if oldest is None:
+                break
             self._runs.pop(oldest, None)
             self._events.pop(oldest, None)
             self._checkpoints.pop(oldest, None)

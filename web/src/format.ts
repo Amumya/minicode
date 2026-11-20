@@ -80,6 +80,8 @@ export function describeEvent(ev: AgentEvent): Described {
     case "assistant_delta":
       // 增量事件仅在流式阶段出现；原始事件列表仅显示摘要，避免逐条展开。
       return { label: "模型输出", detail: clip(str(d.text), 60), tone: "info" };
+      case "stream_reset":
+        return { label: "流式重试", detail: "模型输出从头开始（上下文过长重试）", tone: "info" };
     case "thinking": {
       const step = num(d.step) ?? 0;
       return {

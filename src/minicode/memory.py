@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -122,28 +123,39 @@ class MemoryStore:
     def _write(self, entries: list[MemoryEntry]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         body = "\n".join(json.dumps(e.to_dict(), ensure_ascii=False) for e in entries)
-        self.path.write_text(body + ("\n" if body else ""), encoding="utf-8")
+        data = body + ("\n" if body else "")
+        # 先写临时文件再原子替换：写到一半崩溃不会把整份记忆文件打烂。
+        tmp = self.path.with_name(self.path.name + f".tmp.{os.getpid()}")
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, self.path)
 
     # ---------------------------------------------------------------- 增删
 
     def add(self, text: str, tags: list[str] | None = None) -> tuple[MemoryEntry, bool]:
         """记一条。返回 (条目, 是否新加)；内容完全相同的重复添加返回已有的那条。"""
-        clean = _normalize(text)
-        if not clean:
+        clean_full = _normalize(text)
+        if not clean_full:
             raise ValueError("记忆内容不能为空")
+        # id 按**完整文本**算：两条长文本只要尾巴不同，就不能因为前 400 字相同被当成重复。
+        entry_id = _make_id(clean_full)
+        clean = clean_full
         if len(clean) > MAX_ENTRY_CHARS:
             clean = clean[:MAX_ENTRY_CHARS].rstrip() + "…"
 
         entries = self.entries()
-        entry_id = _make_id(clean)
+        new_tags = sorted({t.strip() for t in (tags or []) if t.strip()})
         for existing in entries:
             if existing.id == entry_id:
+                merged = sorted(set(existing.tags) | set(new_tags))
+                if merged != existing.tags:
+                    existing.tags = merged
+                    self._write(entries)
                 return existing, False
 
         entry = MemoryEntry(
             id=entry_id,
             text=clean,
-            tags=[t.strip() for t in (tags or []) if t.strip()],
+            tags=new_tags,
             created_at=time.time(),
         )
         entries.append(entry)

@@ -113,3 +113,45 @@ def test_tool_call_event_has_output_preview(tmp_path):
     assert "output" in data and "你好" in data["output"], \
         f"事件里要有输出预览，实际 {data.get('output')!r}"
     assert len(data["output"]) <= 400
+
+
+
+class TooLongThenOk:
+    """第一次流式报上下文过长，第二次正常返回。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def stream(self, system, messages, tools, on_text):
+        self.calls += 1
+        if self.calls == 1:
+            on_text("A" * 200)
+            raise ValueError("prompt_too_long: context length exceeded")
+        on_text("完")
+        on_text("整")
+        return ModelReply(text="完整", stop_reason="end_turn",
+                          usage={"input_tokens": 1, "output_tokens": 1})
+
+
+def test_reactive_retry_emits_stream_reset(tmp_path):
+    from minicode.compact import CompactConfig, Compactor
+
+    provider = TooLongThenOk()
+    comp = Compactor(tmp_path, CompactConfig(), summarize=lambda prompt: "摘要")
+    rec = Recorder()
+    result = run(
+        "流式重试",
+        provider=provider,
+        tools=default_registry(),
+        settings=Settings(api_key="fake", model="m", max_steps=3),
+        workspace=tmp_path,
+        recorder=rec,
+        compactor=comp,
+    )
+    assert result.ok
+    assert rec.count("stream_reset") == 1
+    deltas = "".join(str(e.data.get("text", "")) for e in rec.events
+                     if e.kind == "assistant_delta")
+    # 后端事件里第一次失败的增量仍在（轨迹要完整记录），
+    # 但 stream_reset 事件让前端在合并/实时渲染时把它作废。
+    assert "完整" in deltas
