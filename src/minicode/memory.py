@@ -210,6 +210,8 @@ class MemoryStore:
         used = 0
         for entry in picked:
             line = entry.line()
+            if len(line) > max_chars:
+                continue
             if used + len(line) > max_chars:
                 break
             lines.append(line)

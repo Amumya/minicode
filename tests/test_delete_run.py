@@ -83,7 +83,7 @@ def test_delete_endpoint(tmp_path):
     run_id = client.post("/runs", json={"task": "x"}).json()["id"]
     deadline = time.time() + 10
     while time.time() < deadline:
-        if client.get(f"/runs/{run_id}").json()["status"] in ("done", "error"):
+        if client.get(f"/runs/{run_id}").json()["status"] in ("done", "error", "cancelled", "exhausted"):
             break
         time.sleep(0.02)
 

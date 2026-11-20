@@ -169,7 +169,7 @@ export type RunOutcome = "ok" | "interrupted" | "budget_boundary";
  *   但正好卡在上限上，给用户一个"要确认/可继续"的提示。
  */
 export function runOutcome(turn: Turn): RunOutcome {
-  if (!turn.ok && turn.status === "done") return "interrupted";
+  if (!turn.ok && ["done", "cancelled", "exhausted"].includes(turn.status)) return "interrupted";
   const limit = turn.maxSteps ?? 0;
   if (
     turn.ok &&
@@ -271,6 +271,7 @@ export function statusTone(status: string): "ok" | "warn" | "error" | "muted" {
   if (status === "running" || status === "queued") return "warn";
   if (status === "error") return "error";
   if (status === "done") return "ok";
+  if (status === "cancelled" || status === "exhausted") return "warn";
   return "muted";
 }
 

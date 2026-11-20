@@ -44,7 +44,7 @@ def _wait(client: TestClient, run_id: str, timeout: float = 10.0) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         body = client.get(f"/runs/{run_id}").json()
-        if body.get("status") in ("done", "error"):
+        if body.get("status") in ("done", "error", "cancelled", "exhausted"):
             return body
         time.sleep(0.05)
     raise AssertionError(f"run {run_id} 没在 {timeout}s 内结束")

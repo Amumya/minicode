@@ -476,7 +476,8 @@ def _check_segment(seg: Segment, workspace: Path, depth: int = 0) -> Verdict:
             _has_short_flag(args, "r") or "--recursive" in args
             or "--recurse" in args or "/s" in args or is_find_delete
         )
-        targets = _path_targets(args)
+        targets = [t for t in _path_targets(args)
+                   if not (is_find_delete and t in (".", "./"))]
         for t in targets:
             if _is_dangerous_target(t):
                 return Verdict(False, DENIED_DANGEROUS_TARGET, f"删除 {t}")

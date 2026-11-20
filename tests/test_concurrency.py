@@ -80,7 +80,7 @@ def _wait_all(client, run_ids, timeout: float = 30.0) -> list[dict]:
     deadline = time.time() + timeout
     while time.time() < deadline:
         bodies = [client.get(f"/runs/{rid}").json() for rid in run_ids]
-        if all(b["status"] in ("done", "error") for b in bodies):
+        if all(b["status"] in ("done", "error", "cancelled", "exhausted") for b in bodies):
             return bodies
         time.sleep(0.03)
     raise AssertionError(f"{len(run_ids)} 个 run 没在 {timeout}s 内结束")
@@ -154,12 +154,12 @@ def test_cancel_under_load_does_not_break_other_runs(tmp_path):
         list(pool.map(lambda rid: client.post(f"/runs/{rid}/cancel"), cancel_ids))
 
     bodies = _wait_all(client, ids)
-    cancelled = [b for b in bodies if b["status"] == "done" and b["result"]["stop_reason"] == "cancelled"]
+    cancelled = [b for b in bodies if b["status"] == "cancelled"]
     finished = [b for b in bodies if b["result"]["ok"]]
     assert len(cancelled) >= 4, f"取消只生效了 {len(cancelled)} 个"
     assert len(finished) >= 4, f"正常完成只剩 {len(finished)} 个"
     # 没有被取消的 run 不能被拖成 error
-    assert all(b["status"] == "done" for b in bodies)
+    assert all(b["status"] in ("done", "cancelled") for b in bodies)
 
 
 def test_concurrent_followups_keep_conversations_separate(tmp_path):

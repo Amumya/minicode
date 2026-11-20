@@ -183,6 +183,7 @@ export const EVENT_KINDS = [
   "tool_call",
   "assistant_delta",
   "stream_reset",
+  "todo_reminder",
   "denied",
   "unknown_tool",
   "hook_error",

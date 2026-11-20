@@ -76,4 +76,5 @@ def test_missing_command_reports_exit_code(tmp_path):
 
 def test_empty_command_rejected(tmp_path):
     result = BashTool().run({"command": "   "}, tmp_path)
-    assert result.exit_code is None
+    assert result.exit_code == 2
+    assert result.failed is True

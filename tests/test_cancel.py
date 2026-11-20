@@ -133,7 +133,7 @@ def _wait(client, run_id, timeout=15.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         body = client.get(f"/runs/{run_id}").json()
-        if body.get("status") in ("done", "error"):
+        if body.get("status") in ("done", "error", "cancelled", "exhausted"):
             return body
         time.sleep(0.02)
     raise AssertionError("run 没结束")
@@ -150,7 +150,7 @@ def test_cancel_endpoint_stops_run(tmp_path):
     body = _wait(client, run_id)
     assert body["result"]["stop_reason"] == "cancelled", body["result"]
     assert body["result"]["ok"] is False
-    assert body["status"] == "done"
+    assert body["status"] == "cancelled"
 
 
 def test_cancel_unknown_run_404(tmp_path):

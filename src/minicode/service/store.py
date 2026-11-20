@@ -217,7 +217,7 @@ class RedisStore:
 
     def get(self, run_id: str) -> RunState | None:
         data = self._r.hgetall(self._k_run(run_id))
-        if not data:
+        if not data or not data.get("id"):
             return None
         return RunState(
             id=data["id"],

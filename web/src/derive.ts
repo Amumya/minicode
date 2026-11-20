@@ -159,7 +159,7 @@ export function canResume(run: RunSummary | null): boolean {
  */
 export function canFollowup(run: RunSummary | null): boolean {
   if (!run) return false;
-  return run.status === "done" || run.status === "error";
+  return ["done", "error", "cancelled", "exhausted"].includes(run.status ?? "");
 }
 
 /** 把毫秒说成人话。 */

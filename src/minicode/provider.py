@@ -34,6 +34,7 @@ class ModelReply:
 
 class Provider(Protocol):
     def complete(self, system: str, messages: list[dict], tools: list[dict]) -> ModelReply: ...
+    def stream(self, system: str, messages: list[dict], tools: list[dict], on_text) -> ModelReply: ...
 
 
 class AnthropicProvider:

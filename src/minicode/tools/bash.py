@@ -52,7 +52,7 @@ class BashTool:
     def run(self, args: dict, cwd: Path) -> ToolResult:
         command = (args or {}).get("command", "")
         if not isinstance(command, str) or not command.strip():
-            return ToolResult("没有拿到 command 参数", exit_code=None)
+            return ToolResult("没有拿到 command 参数", exit_code=2)
 
         popen_kwargs: dict = {
             "cwd": str(cwd),

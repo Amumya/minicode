@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-MAX_MODEL_CHARS = 8000
+MAX_MODEL_CHARS = 20000
 
 
 @dataclass
@@ -27,7 +27,13 @@ class ToolResult:
     def to_model_content(self) -> str:
         text = self.content
         if len(text) > MAX_MODEL_CHARS:
-            text = text[:MAX_MODEL_CHARS] + f"\n…（已截断，原长 {len(self.content)}）"
+            head = text[: MAX_MODEL_CHARS - 6000]
+            tail = text[-6000:]
+            text = (
+                f"{head}\n…（中间省略 {len(text) - MAX_MODEL_CHARS} 字符，"
+                f"完整输出在轨迹视图）…\n{tail}"
+                f"\n…（已截断，原长 {len(self.content)}）"
+            )
         if self.exit_code is None:
             return text
         return f"[exit={self.exit_code}]\n{text}"

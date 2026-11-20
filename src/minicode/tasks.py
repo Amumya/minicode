@@ -130,8 +130,6 @@ class TaskStore:
         for dep in deps:
             if not self.exists(dep):
                 raise ValueError(f"前置任务不存在: {dep}")
-            if self._depends_on(dep, None):
-                pass  # 只为触发可能的异常，真正的环检测在下面
 
         task = Task(
             id=self._new_id(),
@@ -152,8 +150,10 @@ class TaskStore:
             candidate = f"task_{secrets.token_hex(4)}"
             if not self.exists(candidate):
                 return candidate
-        # 极端情况下兜底：用时间戳，保证一定不重复
-        return f"task_{int(time.time() * 1000):x}"
+        while True:
+            candidate = f"task_{secrets.token_hex(8)}"
+            if not self.exists(candidate):
+                return candidate
 
     def _depends_on(self, task_id: str, target_id: str | None) -> bool:
         """task_id 是否（间接）依赖 target_id。target_id 为 None 时只做可达性检查。"""

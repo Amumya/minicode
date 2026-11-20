@@ -3,6 +3,12 @@ import test from "node:test";
 
 import { clip, describeEvent, formatTime, summarizeResult } from "./format.ts";
 
+test("todo_reminder 事件有说明", () => {
+  const d = describeEvent({ kind: "todo_reminder", data: { since: 2 } });
+  assert.equal(d.label, "计划提醒");
+  assert.match(d.detail, /2/);
+});
+
 test("stream_reset 事件有说明", () => {
   const d = describeEvent({ kind: "stream_reset", data: {} });
   assert.equal(d.label, "流式重试");

@@ -25,7 +25,7 @@ from minicode.provider import ModelReply, Provider
 from minicode.tools.base import Registry, ToolResult
 from minicode.tools.compact import COMPACT_SIGNAL
 
-TODO_NAG_AFTER = 2  # 连续这么多轮没更新计划，就在工具结果里注入提醒
+TODO_NAG_AFTER = 3  # 连续这么多轮没更新计划，就在工具结果里注入提醒
 
 def _default_system() -> str:
     """默认系统提示词统一从 prompts 生成，避免这里、prompts、子代理三处各写一份而发散。"""
@@ -426,11 +426,13 @@ def run(
 
         used_todo = any(tc.name == "todo_write" for tc in reply.tool_calls)
         rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
-        if rounds_since_todo >= TODO_NAG_AFTER:
+        if "todo_write" in tools.names() and rounds_since_todo >= TODO_NAG_AFTER:
             results.append(
                 {"type": "text",
                  "text": "<reminder>该更新计划了：用 todo_write 把已完成条目标成 completed。</reminder>"}
             )
+            # 提醒也记成事件：轨迹视图能看到它每轮都在注入，而不是只在发给模型的消息里。
+            rec.add("todo_reminder", step=step, since=rounds_since_todo)
         messages.append({"role": "user", "content": results})
 
         # 模型主动要求压缩：等这批结果补齐再压，否则会把刚拿到的结果压掉、还留下孤儿 tool_result。

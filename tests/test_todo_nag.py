@@ -3,9 +3,10 @@
 from pathlib import Path
 
 from minicode.config import Settings
+from minicode.events import Recorder
 from minicode.loop import run
 from minicode.provider import ModelReply, ToolCall
-from minicode.tools import default_registry
+from minicode.tools import TodoList, build_registry
 
 
 def _bash(i: int) -> ModelReply:
@@ -40,12 +41,14 @@ def test_reminder_injected_after_three_rounds(tmp_path: Path):
         ModelReply(text="done", stop_reason="end_turn",
                    usage={"input_tokens": 1, "output_tokens": 1}),
     ])
-    run("跑四轮", provider=provider, tools=default_registry(),
+    rec = Recorder()
+    run("跑四轮", provider=provider, tools=build_registry(todo=TodoList()),
         settings=Settings(api_key="fake", model="m", max_steps=8),
-        workspace=tmp_path)
-    # 第 1 轮没有提醒；连续第 2 轮没更新就开始注入
+        workspace=tmp_path, recorder=rec)
+    assert rec.count("todo_reminder") == 2
+    # 第 1、2 轮没有提醒；连续第 3 轮没更新开始注入
     assert "该更新计划" not in _last_user(provider.calls[1])
-    assert "该更新计划" in _last_user(provider.calls[2])
+    assert "该更新计划" not in _last_user(provider.calls[2])
     assert "该更新计划" in _last_user(provider.calls[3])
     assert "该更新计划" in _last_user(provider.calls[4])
 
@@ -62,10 +65,12 @@ def test_todo_write_resets_counter(tmp_path: Path):
         ModelReply(text="done", stop_reason="end_turn",
                    usage={"input_tokens": 1, "output_tokens": 1}),
     ])
-    run("更新一次计划", provider=provider, tools=default_registry(),
+    rec = Recorder()
+    run("更新一次计划", provider=provider, tools=build_registry(todo=TodoList()),
         settings=Settings(api_key="fake", model="m", max_steps=8),
-        workspace=tmp_path)
-    # 第 1 轮调了 todo_write → 计数器清零；第 2 轮不提醒，第 3 轮（连续 2 轮没更新）提醒
+        workspace=tmp_path, recorder=rec)
+    assert rec.count("todo_reminder") == 1
+    # 第 1 轮调了 todo_write → 计数器清零；第 2、3 轮不提醒，第 4 轮（连续 3 轮没更新）提醒
     assert "该更新计划" not in _last_user(provider.calls[2])
-    assert "该更新计划" in _last_user(provider.calls[3])
+    assert "该更新计划" not in _last_user(provider.calls[3])
     assert "该更新计划" in _last_user(provider.calls[4])

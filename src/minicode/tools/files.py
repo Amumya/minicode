@@ -75,7 +75,8 @@ class ReadFileTool(_SafeRun):
         if not path.is_file():
             return _err(f"文件不存在: {rel}")
         try:
-            text = path.read_text(encoding="utf-8")
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                text = handle.read()
         except UnicodeDecodeError:
             return _err(f"不是 UTF-8 文本: {rel}")
 
@@ -107,7 +108,8 @@ class WriteFileTool(_SafeRun):
         except PathOutsideWorkspace as exc:
             return _err(str(exc))
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(content)
         return ToolResult(f"已写入 {rel}（{len(content)} 字符）", exit_code=0,
                           meta={"path": rel, "bytes": len(content.encode('utf-8'))})
 
@@ -141,12 +143,14 @@ class EditFileTool(_SafeRun):
         if not path.is_file():
             return _err(f"文件不存在: {rel}")
 
-        text = path.read_text(encoding="utf-8")
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            text = handle.read()
         hits = text.count(old)
         if hits == 0:
             return _err(f"没找到要替换的内容: {old[:40]!r}")
         if hits > 1:
             return _err(f"要替换的内容出现了 {hits} 次，不唯一，没有修改")
 
-        path.write_text(text.replace(old, new, 1), encoding="utf-8")
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(text.replace(old, new, 1))
         return ToolResult(f"已修改 {rel}", exit_code=0, meta={"path": rel})

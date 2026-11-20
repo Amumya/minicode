@@ -321,6 +321,10 @@ def create_app(
                 # 前者要标 error（界面会红），后者是 ok=False 的正常收尾。
                 state.error = result.error or "模型调用失败"
                 state.status = "error"
+            elif result.stop_reason == "cancelled":
+                state.status = "cancelled"
+            elif result.stop_reason == "max_steps":
+                state.status = "exhausted"
             else:
                 state.status = "done"
         except Exception as exc:  # noqa: BLE001 - 后台线程的异常必须自己接住
@@ -694,7 +698,7 @@ def create_app(
                     yield (f"id: {sent - 1}\nevent: {ev['kind']}\n"
                            f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
                 fresh = st.get(run_id)
-                if fresh is not None and fresh.status in ("done", "error"):
+                if fresh is not None and fresh.status in ("done", "error", "cancelled", "exhausted"):
                     # 先发送已产生的事件：读取事件与查询状态之间可能新增事件，
                     # 若直接发送 end，客户端会缺少最后几条事件（已验证可能丢失 finish/model_call）。
                     while True:

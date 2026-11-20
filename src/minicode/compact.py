@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import time
@@ -565,7 +566,7 @@ class Compactor:
             stats.chars_after = stats.chars_before
             return messages, stats
 
-        body = [dict(message) for message in messages]  # 浅拷贝列表，不改调用方的序列
+        body = [copy.deepcopy(message) for message in messages]  # 深拷贝：block 会被就地改写，不能共享
         body = self.tool_result_budget(body, stats)
         body = self.snip_compact(body, stats)
 

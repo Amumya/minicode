@@ -36,7 +36,8 @@ def test_runs_in_workspace(tmp_path):
 
 def test_empty_command_rejected(tmp_path):
     r = BashTool().run({}, tmp_path)
-    assert r.exit_code is None
+    assert r.exit_code == 2
+    assert r.failed is True
     assert "command" in r.content
 
 
