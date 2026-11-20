@@ -117,7 +117,6 @@ const main = {
   cancel: el<HTMLButtonElement>("cancel"),
   statusLine: el<HTMLElement>("status"),
   model: el<HTMLSelectElement>("model"),
-  maxSteps: el<HTMLInputElement>("maxSteps"),
   optFiles: el<HTMLInputElement>("optFiles"),
   optPlan: el<HTMLInputElement>("optPlan"),
   optSkills: el<HTMLInputElement>("optSkills"),
@@ -1068,14 +1067,13 @@ async function submit(): Promise<void> {
   try {
     let runId: string;
     if (canFollow && lastRun) {
-      const resp = await api.followup(lastRun.id, task, Number(main.maxSteps.value) || 20);
+      const resp = await api.followup(lastRun.id, task);
       runId = resp.id;
     } else {
       const resp = await api.createRun({
         task,
         workspace: workspace || undefined,
         model: main.model.value || undefined,
-        maxSteps: Number(main.maxSteps.value) || 20,
         includeFiles: main.optFiles.checked,
         plan: main.optPlan.checked,
         skills: main.optSkills.checked,
@@ -1178,7 +1176,7 @@ async function resumeRun(): Promise<void> {
   if (!last) return;
   setStatus("正在从检查点恢复…");
   try {
-    await api.resume(last.id, Math.max(Number(main.maxSteps.value) || 20, 8));
+    await api.resume(last.id);
     const refreshed = await api.run(last.id);
     runs = runs.map((r) => (r.id === last.id ? { ...refreshed, events: r.events } : r));
     attachStream(runs[runs.length - 1]);

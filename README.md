@@ -309,7 +309,8 @@ curl.exe -sN http://127.0.0.1:8765/runs/<run_id>/events
 每条 `data` 为 JSON，`assistant_delta` 为流式文本增量。
 
 浏览器访问 `http://127.0.0.1:8765/` 即为界面。文件工具、计划、技能、压缩、任务图和
-记忆默认启用；步数默认 20，最大 50。
+记忆默认启用；前端固定使用默认 20 步，不提供步数修改入口。CLI 与 HTTP API 仍可通过
+`max_steps` 覆盖，服务端上限 50。
 
 ### 访问令牌
 
@@ -409,7 +410,7 @@ tools/             开发辅助脚本（store 清理、并发压测）
 
 ## 评测与记录
 
-决策记录与实验数据见 [docs/取舍与证据.md](docs/取舍与证据.md)，共 78 条。
+决策记录与实验数据见 [docs/取舍与证据.md](docs/取舍与证据.md)，共 79 条。
 MCP 配置示例见 [docs/mcp.example.json](docs/mcp.example.json)。
 README 中的数字均可在决策记录或 `eval/runs/` 中找到出处。
 

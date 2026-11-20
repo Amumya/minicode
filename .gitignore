@@ -78,3 +78,6 @@ tmp*/
 thinking_*.jsonl
 thinking_*.json
 scripts/thinking_*.py
+
+# 测试/调试临时目录
+.tmp/

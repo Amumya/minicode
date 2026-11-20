@@ -55,7 +55,6 @@ export interface CreateRunOptions {
   task: string;
   workspace?: string;
   model?: string;
-  maxSteps?: number;
   includeFiles?: boolean;
   plan?: boolean;
   skills?: boolean;
@@ -152,22 +151,19 @@ export const api = {
     };
     if (opts.workspace) body.workspace = opts.workspace;
     if (opts.model) body.model = opts.model;
-    if (opts.maxSteps) body.max_steps = opts.maxSteps;
     return request("/runs", jsonBody(body));
   },
 
-  followup(runId: string, text: string, maxSteps?: number): Promise<{ id: string }> {
-    const body: Record<string, unknown> = { text };
-    if (maxSteps) body.max_steps = maxSteps;
-    return request(`/runs/${encodeURIComponent(runId)}/followup`, jsonBody(body));
+  followup(runId: string, text: string): Promise<{ id: string }> {
+    return request(`/runs/${encodeURIComponent(runId)}/followup`, jsonBody({ text }));
   },
 
   cancel(runId: string): Promise<{ id: string; cancelled?: boolean }> {
     return request(`/runs/${encodeURIComponent(runId)}/cancel`, jsonBody({}));
   },
 
-  resume(runId: string, maxSteps?: number): Promise<{ id: string }> {
-    return request(`/runs/${encodeURIComponent(runId)}/resume`, jsonBody({ max_steps: maxSteps }));
+  resume(runId: string): Promise<{ id: string }> {
+    return request(`/runs/${encodeURIComponent(runId)}/resume`, jsonBody({}));
   },
 
   runTasks(runId: string): Promise<{

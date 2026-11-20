@@ -192,12 +192,11 @@ check("清空令牌后不再带 Authorization",
 check("每个会话行都有删除按钮", doc.querySelectorAll("#conversations .conv-del").length === 1,
   `${doc.querySelectorAll("#conversations .conv-del").length} 个`);
 
-// 默认值：六个开关全选，步数 20（多步任务所需步数高于 8）。
+  // 默认值：六个开关全选；步数固定由后端默认 20，前端不提供输入。
 const defaultSwitches = ["#optFiles", "#optPlan", "#optSkills", "#optCompact", "#optTasks", "#optMemory"];
 check("五个开关默认全选", defaultSwitches.every((sel) => doc.querySelector(sel).checked),
   defaultSwitches.map((sel) => `${sel}=${doc.querySelector(sel).checked}`).join(" "));
-check("默认步数是 20", doc.querySelector("#maxSteps").value === "20",
-  doc.querySelector("#maxSteps").value);
+  check("页面不再提供步数输入框", doc.querySelector("#maxSteps") === null);
 
 // ---------------------------------------------------------------- 视图切换（没有右侧栏）
 check("没有右侧详情栏", !doc.querySelector("#inspector"));
@@ -286,7 +285,8 @@ check("提交 body 带上了任务和开关",
   sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
   sentBody.include_files === true && sentBody.tasks === true &&
   sentBody.memory === true && sentBody.mcp === true);
-check("提交时带上默认步数 20", sentBody.max_steps === 20, String(sentBody.max_steps));
+  check("提交时不携带 max_steps（由后端默认 20）", sentBody.max_steps === undefined,
+    String(sentBody.max_steps));
 
 const before = calls.filter((c) => c === "POST /runs").length;
 doc.querySelector("#task").value = "再开一个";
