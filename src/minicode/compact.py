@@ -280,12 +280,16 @@ class Compactor:
             if not (over_single or over_batch):
                 break  # 已按体积降序，后面的只会更小
             if len(output) <= 120:
-                continue
-            block["content"] = self.persist_large_output(
+                break  # 已按体积降序，后面的块更小，不可能被 L1 落盘；批量超限交给 L3
+            persisted = self.persist_large_output(
                 block.get("tool_use_id", "unknown"), output
             )
-            stats.persisted += 1
-            total = sum(len(str(item.get("content", ""))) for item in blocks)
+            # persist_large_output 对未超过单条阈值的输出会原样返回：
+            # 只有内容真的变了才算落盘，否则批量超限的场景会虚报计数。
+            if persisted != output:
+                block["content"] = persisted
+                stats.persisted += 1
+                total = sum(len(str(item.get("content", ""))) for item in blocks)
         if stats.persisted:
             stats.level = "persist"
             stats.notes.append(f"落盘 {stats.persisted} 条工具输出")

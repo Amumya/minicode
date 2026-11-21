@@ -136,6 +136,17 @@ def test_snip_never_leaves_orphan_results(tmp_path):
 
 # ---------------------------------------------------------------- L3 微压缩
 
+def test_batch_over_with_medium_block_is_not_counted_as_persisted(tmp_path):
+    # 单条 500 字符没超 max_tool_result_chars，只触发 batch 超限：
+    # persist_large_output 原样返回，不得虚报 persisted。
+    msgs = _conversation(1, size=500)
+    comp = Compactor(tmp_path, CompactConfig(max_tool_result_chars=1000, batch_result_chars=100))
+    out, stats = comp.prepare(msgs, "任务")
+    assert stats.persisted == 0
+    assert not stats.changed
+    assert out[2]["content"][0]["content"] == "x" * 500
+
+
 def test_micro_compact_trims_old_keeps_recent(tmp_path):
     msgs = _conversation(5, size=20_000)
     comp = Compactor(
