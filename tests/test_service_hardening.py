@@ -353,3 +353,35 @@ def test_running_status_refreshed_in_redis(tmp_path):
     body = _wait(client, run_id, timeout=10)
     assert body["status"] == "done"
     assert store.get(run_id).updated_at >= initial + 0.4
+
+
+def test_startup_marks_stale_running_runs(tmp_path):
+    """Redis 模式重启后，上进程遗留的 running 不能永远挂着。"""
+    store = RedisStore(client=fakeredis.FakeRedis(decode_responses=True))
+    store.create(RunState(id="stale-run", task="x", model="m",
+                          workspace=str(tmp_path), status="running"))
+    create_app(
+        provider_factory=lambda s: EchoProvider(),
+        settings=Settings(api_key="fake", model="m"),
+        store=store,
+        default_workspace=tmp_path,
+        reconcile_stale=True,
+    )
+    stale = store.get("stale-run")
+    assert stale is not None
+    assert stale.status == "error"
+    assert "中断" in (stale.error or "")
+
+
+def test_startup_keeps_inmemory_runs(tmp_path):
+    """内存 store 是当前进程自己的，启动时不能误伤。"""
+    store = InMemoryStore()
+    store.create(RunState(id="mem-run", task="x", model="m",
+                          workspace=str(tmp_path), status="running"))
+    create_app(
+        provider_factory=lambda s: EchoProvider(),
+        settings=Settings(api_key="fake", model="m"),
+        store=store,
+        default_workspace=tmp_path,
+    )
+    assert store.get("mem-run").status == "running"

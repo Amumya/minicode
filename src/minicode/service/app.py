@@ -144,6 +144,7 @@ def create_app(
     store: SessionStore | None = None,
     default_workspace: Path | None = None,
     token: str | None = None,
+    reconcile_stale: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="minicode", version=__version__)
     st = store or default_store()
@@ -206,6 +207,16 @@ def create_app(
 
     # 每个 run 一个取消信号；worker 在每步开始时检查。
     cancel_flags: dict[str, threading.Event] = {}
+
+    # Redis 模式的桌面端：上个进程崩溃/被关掉时，run 会永远停在 running，
+    # 重启后没有 worker 接它，界面就显示“卡住”。启动时统一标成中断。
+    # 只处理 Redis（持久化后端）；内存 store 的 run 只属于当前进程。
+    if reconcile_stale and isinstance(st, RedisStore):
+        for stale in st.all():
+            if stale.status in ("running", "queued"):
+                stale.status = "error"
+                stale.error = "服务重启导致任务中断（没有活跃的 worker）"
+                st.update(stale)
 
     def _factory(settings_obj: Settings):
         if provider_factory is not None:

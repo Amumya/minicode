@@ -79,7 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--no-wait", action="store_true",
                    help="不等窗口关闭（服务在后台继续跑）")
     a.add_argument("--mode", choices=("auto", "gui", "app", "window"), default="auto",
-                   help="窗口模式：auto=先试桌面窗口/浏览器窗口，渲染不出来就降级")
+                   help="窗口模式：auto=优先 PySide6 原生窗口，失败退回浏览器（默认）；"
+                        "gui=强制 PySide6；app=Edge/Chrome 独立窗口；window=普通浏览器窗口")
     a.add_argument("--no-redis", action="store_true",
                    help="不用 Redis（内存存储，重新打开后历史会丢）")
 
@@ -107,6 +108,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--token", default=None, help="访问令牌（设了之后接口要求鉴权）")
     s.add_argument("--no-redis", action="store_true",
                    help="不用 Redis（内存存储，重启后历史会丢）")
+    s.add_argument("--memory-log", action="store_true",
+                   help="把服务进程内存每 10 秒写入 <workspace>/.minicode/memory.log")
 
     return p
 
@@ -340,9 +343,15 @@ def cmd_app(args) -> int:
         redis_proc, _ = _ensure_persistent_store(_repo_root(), args.no_redis)
 
     try:
-        app = create_app(default_workspace=args.workspace)
+        server_cmd = [
+            sys.executable, "-m", "minicode", "serve",
+            "--host", args.host, "--port", str(args.port), "--memory-log",
+        ]
+        if args.workspace:
+            server_cmd += ["--workspace", str(args.workspace)]
         return run_app(
-            app,
+            None,
+            server_cmd=server_cmd,
             host=args.host,
             port=args.port,
             workspace=args.workspace,
@@ -401,7 +410,8 @@ def cmd_dev(args) -> int:
     else:
         print("Redis: 没启用（用内存存储 —— 服务重启后历史会丢）")
 
-    app = create_app(default_workspace=args.workspace, token=args.token)
+    app = create_app(default_workspace=args.workspace, token=args.token,
+                              reconcile_stale=True)
     print(f"服务: http://{args.host}:{args.port}/")
     if args.token:
         print("访问令牌已启用：界面右上角（令牌一栏）填同一个值")
@@ -435,6 +445,8 @@ def cmd_dev(args) -> int:
                 reload_dirs=[str(root / "src")],
             )
         else:
+            if getattr(args, "memory_log", False):
+                _start_memory_logger(args.workspace)
             uvicorn.run(app, host=args.host, port=args.port, log_level="info")
         return 0
     except KeyboardInterrupt:
@@ -503,6 +515,33 @@ def cmd_mcp(args) -> int:
     return 1 if failed else 0
 
 
+def _start_memory_logger(workspace) -> None:
+    """后台线程：服务端 RSS 写 memory.log，配合桌面窗口定位 OOM。"""
+    import threading
+    import time as time_module
+    from pathlib import Path as PathClass
+
+    from minicode.meminfo import rss_mb
+
+    base = PathClass(workspace) if workspace else PathClass.cwd()
+
+    def loop() -> None:
+        path = base / ".minicode" / "memory.log"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        while True:
+            try:
+                with open(path, "a", encoding="utf-8") as handle:
+                    handle.write(f"{time_module.strftime('%H:%M:%S')} server rss={rss_mb()}MB\n")
+            except OSError:
+                pass
+            time_module.sleep(10)
+
+    threading.Thread(target=loop, daemon=True, name="memory-logger").start()
+
+
 def cmd_serve(args) -> int:
     try:
         import uvicorn
@@ -518,7 +557,8 @@ def cmd_serve(args) -> int:
 
     redis_proc, _ = _ensure_persistent_store(_repo_root(), args.no_redis)
     try:
-        app = create_app(default_workspace=args.workspace, token=args.token)
+        app = create_app(default_workspace=args.workspace, token=args.token,
+                              reconcile_stale=True)
         if args.token:
             print("访问令牌已启用：浏览器界面里需要填同一个令牌")
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")

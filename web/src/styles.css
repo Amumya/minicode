@@ -1643,3 +1643,44 @@ details.traj-raw-json > summary {
 }
 .network-chip.ok { color: var(--ok); background: rgba(21, 128, 61, 0.08); }
 .network-chip.failed { color: var(--error); background: rgba(220, 38, 38, 0.08); }
+
+/* 编队分组：每个 team 独立区域，Lead 与成员不再混排 */
+.team-group {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  margin-top: 10px;
+  background: rgba(246, 247, 249, 0.55);
+}
+.team-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.team-group-badge {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+}
+.team-group-badge.sub { background: #e6f7ee; color: #15803d; }
+.team-group-title { font-size: 12px; font-weight: 600; }
+.team-group-meta { font-size: 11px; color: var(--muted); }
+
+/* 性能：视口外的事件/编队卡片跳过布局与绘制，滚动长列表时不掉帧 */
+.traj-entry, .team-group, .agent-card, .panel, .turn {
+  contain: layout style paint;
+}
+.traj-entry {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
+.team-group {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 260px;
+}
+.agent-card { content-visibility: auto; contain-intrinsic-size: auto 120px; }

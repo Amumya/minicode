@@ -79,6 +79,13 @@ const HISTORY_RUN = {
             { name: "alice", role: "安全", ok: true, steps: 4, tokens: 88, tool_calls: 5, output: "无高危问题", error: "" },
             { name: "bob", role: "性能", ok: false, steps: 2, tokens: 40, tool_calls: 1, output: "", error: "超时" },
           ] } } } },
+      { kind: "tool_call", ts: nowSec(), data: {
+          step: 11, tool: "team", args: { task: "审查支付模块" },
+          exit_code: 0, failed: false, output: "成员结论",
+          meta: { team: { task: "审查支付模块", members: [
+            { name: "carol", role: "合规", ok: true, steps: 3, tokens: 60, tool_calls: 3, output: "合规通过", error: "" },
+            { name: "dave", role: "风控", ok: true, steps: 4, tokens: 70, tool_calls: 4, output: "无风险", error: "" },
+          ] } } } },
   ],
 };
 
@@ -244,6 +251,14 @@ check("历史回答走 Markdown 渲染", doc.querySelector("#chat .answer strong
   const netText = doc.querySelector("#chat .agent-network")?.textContent ?? "";
   check("Agent 卡片显示任务与 Token 指标",
     netText.includes("主控") && netText.includes("alice") && netText.includes("Token"));
+  const teamGroups = [...doc.querySelectorAll("#chat .team-group")]
+    .filter((group) => (group.textContent ?? "").includes("编队 "));
+  check("多个编队按组渲染", teamGroups.length === 2, `${teamGroups.length} 组`);
+  check("每个编队只有一个 Lead 且不与成员混排",
+    teamGroups.every((group) =>
+      group.querySelectorAll(".agent-card.lead").length === 1 &&
+      group.querySelectorAll(".agent-lead-row .agent-card.lead").length === 1 &&
+      group.querySelectorAll(".agent-grid .agent-card").length === 2));
   const taskRows = [...doc.querySelectorAll("#chat .task-row")];
   check("协作任务板列出成员", taskRows.length >= 4, `${taskRows.length} 行`);
   const eventRows = [...doc.querySelectorAll("#chat .event-row:not(.event-head)")];

@@ -825,14 +825,7 @@ function renderTeam(): void {
     h("div", { class: "panel-sub" }, "Agent 与子代理的调用记录 · 点击卡片高亮联动")));
   netHead.append(h("span", { class: "panel-badge" }, `${agents.length} 个 Agent`));
   network.append(netHead);
-  const lead = agents.find((agent) => agent.kind === "lead");
-  const rest = lead ? agents.filter((agent) => agent !== lead) : agents;
-  if (lead) {
-    const leadRow = h("div", { class: "agent-lead-row" });
-    leadRow.append(renderAgentCard(lead));
-    network.append(leadRow);
-    if (rest.length) network.append(h("div", { class: "agent-connector" }));
-  }
+  const byKey = new Map(agents.map((agent) => [agent.key, agent]));
   const toolbar = h("div", { class: "network-toolbar" });
   toolbar.append(
     h("span", { class: "network-chip" }, `全部 ${agents.length}`),
@@ -840,9 +833,55 @@ function renderTeam(): void {
     h("span", { class: "network-chip failed" }, `失败 ${agents.length - doneCount(agents)}`),
   );
   network.append(toolbar);
-  const grid = h("div", { class: "agent-grid" });
-  for (const agent of rest) grid.append(renderAgentCard(agent));
-  network.append(grid);
+
+  // 每个编队独立成组：Lead 在组头上方，成员在下方；
+  // 多个 team 调用时不会再出现“第二个 Lead 混进成员网格”的问题。
+  teams.forEach((team, index) => {
+    const group = h("section", { class: "team-group" });
+    const groupHead = h("div", { class: "team-group-head" });
+    groupHead.append(
+      h("span", { class: "team-group-badge" }, `编队 ${index + 1}`),
+      h("span", { class: "team-group-title" }, team.task || "编队任务"),
+      h("span", { class: "team-group-meta" },
+        `第 ${team.step} 步 · ${team.members.length} 名成员`),
+    );
+    group.append(groupHead);
+
+    const lead = byKey.get(`lead-${index}`);
+    if (lead) {
+      const leadRow = h("div", { class: "agent-lead-row" });
+      leadRow.append(renderAgentCard(lead));
+      group.append(leadRow);
+    }
+    const members = team.members
+      .map((_, memberIndex) => byKey.get(`team-${index}-${memberIndex}`))
+      .filter((agent): agent is AgentCardData => Boolean(agent));
+    if (members.length) {
+      if (lead) group.append(h("div", { class: "agent-connector" }));
+      const grid = h("div", { class: "agent-grid" });
+      for (const member of members) grid.append(renderAgentCard(member));
+      group.append(grid);
+    }
+    network.append(group);
+  });
+
+  const subAgents = subs
+    .map((_, index) => byKey.get(`sub-${index}`))
+    .filter((agent): agent is AgentCardData => Boolean(agent));
+  if (subAgents.length) {
+    const group = h("section", { class: "team-group" });
+    const groupHead = h("div", { class: "team-group-head" });
+    groupHead.append(
+      h("span", { class: "team-group-badge sub" }, "子代理"),
+      h("span", { class: "team-group-title" }, "独立子代理记录"),
+      h("span", { class: "team-group-meta" }, `${subAgents.length} 个`),
+    );
+    group.append(groupHead);
+    const grid = h("div", { class: "agent-grid" });
+    for (const agent of subAgents) grid.append(renderAgentCard(agent));
+    group.append(grid);
+    network.append(group);
+  }
   mainCol.append(network);
 
   const eventPanel = h("section", { class: "panel team-events" });
@@ -890,8 +929,11 @@ function renderTeam(): void {
   );
   detail.append(detailMetrics);
   detail.append(h("div", { class: "detail-label" }, "结论"));
+  const detailText = selected.error || selected.output || "（还没有结论）";
   detail.append(h("pre", { class: "detail-output" },
-    selected.error || selected.output || "（还没有结论）"));
+    detailText.length > 8000
+      ? detailText.slice(0, 8000) + "\n…（已截断，完整内容在日志视图）"
+      : detailText));
   side.append(detail);
 
   const board = h("section", { class: "panel task-board" });

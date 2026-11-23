@@ -21,7 +21,7 @@ from minicode.tools.base import Registry, ToolResult
 
 MAX_MEMBERS = 6
 TEAM_TIMEOUT_SECONDS = 300
-MAX_WORKERS = 3
+MAX_WORKERS = 2
 
 
 def _timeout_report():
@@ -170,7 +170,7 @@ class TeamTool:
                 "steps": report.steps,
                 "tokens": report.input_tokens + report.output_tokens,
                 "tool_calls": report.tool_calls,
-                "output": output,
+                "output": output[:4000] + ("…（已截断）" if len(output) > 4000 else ""),
                 "error": report.error,
             })
 

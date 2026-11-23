@@ -47,6 +47,7 @@ _BAD_TITLE_MARKERS = ("新建标签页", "New tab", "无标题", "Untitled")
 
 # 桌面窗口标题（和 index.html 的 <title> 一致）
 QT_WINDOW_TITLE = "minicode"
+ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
 def qt_window_available() -> bool:
@@ -123,6 +124,29 @@ def _install_crash_logging(workspace: Path | None) -> None:
     threading.excepthook = _thread_hook
 
 
+def _start_memory_monitor(workspace: Path | None) -> None:
+    """每 10 秒把窗口进程内存写进 .minicode/memory.log，OOM 崩溃前能看到曲线。"""
+    from minicode.meminfo import rss_mb
+
+    def loop() -> None:
+        try:
+            log_dir = (workspace or Path.cwd()) / ".minicode"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            path = log_dir / "memory.log"
+        except OSError:
+            return
+        while True:
+            try:
+                with open(path, "a", encoding="utf-8") as handle:
+                    handle.write(f"{time.strftime('%H:%M:%S')} qt rss={rss_mb()}MB\n")
+            except OSError:
+                pass
+            time.sleep(10)
+
+    thread = threading.Thread(target=loop, daemon=True, name="memory-monitor")
+    thread.start()
+
+
 def _ensure_qt_flags() -> None:
     """给 QtWebEngine 补 Chromium 兼容参数。
 
@@ -134,7 +158,10 @@ def _ensure_qt_flags() -> None:
     flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
     if "--no-sandbox" not in flags:
         flags = f"{flags} --no-sandbox".strip()
-    if "--disable-gpu" not in flags:
+    # 实测（2026-11-24）：只有加 --disable-gpu 时才会出现
+    # "Failed to create GLES3 context / kFatalFailure"；默认不要强制软件渲染。
+    # 真遇到 GPU 进程崩溃可以用 MINICODE_QT_SOFTWARE=1 显式退回软件渲染。
+    if os.environ.get("MINICODE_QT_SOFTWARE") == "1" and "--disable-gpu" not in flags:
         flags = f"{flags} --disable-gpu".strip()
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = flags
 
@@ -159,6 +186,9 @@ def run_qt_window(
 
     profile_dir = (Path(workspace) if workspace else Path.cwd()) / ".minicode" / "qt-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_qt_data_dirs(profile_dir)
+    _install_crash_logging(workspace)
+    _start_memory_monitor(workspace)
 
     app = QApplication.instance() or QApplication([sys.argv[0]])
     window = QMainWindow()
@@ -403,8 +433,9 @@ def launch_browser(browser: str, url: str, profile_dir: Path,
 
 
 def run_app(
-    app,
+    app=None,
     *,
+    server_cmd: list[str] | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
     workspace: Path | None = None,
@@ -431,28 +462,76 @@ def run_app(
             print(f"  window 参数: {' '.join(browser_args(found, window_url, profile, 'window'))}")
         return 0
 
-    # 端口被旧实例占用时，新启动的 uvicorn 会绑定失败，但 wait_for_health
-    # 会从旧实例获取 200 响应，导致窗口指向旧服务。
+    # 端口已被占用：如果是 minicode 自己的后端（上个窗口崩了但服务还在），
+    # 直接复用，不再起新服务，也不在窗口关闭时杀掉它。
+    server_proc = None
+    server_thread = None
+    server = None
+    reused = False
     if _port_in_use(host, port):
-        print(f"端口 {port} 已被占用（可能存在残留服务）。", file=sys.stderr)
-        print(f"  换个端口：minicode app --port {port + 1}", file=sys.stderr)
-        return 1
+        if wait_for_health(url):
+            print(f"复用已在运行的服务: {url}")
+            reused = True
+        else:
+            print(f"端口 {port} 已被占用（不是可用的 minicode 服务）。", file=sys.stderr)
+            print(f"  换个端口：minicode app --port {port + 1}", file=sys.stderr)
+            return 1
+    elif server_cmd:
+        # 独立子进程：Qt 窗口崩溃不会把后端和正在跑的任务一起带走。
+        log_dir = (Path(workspace) if workspace else Path.cwd()) / ".minicode"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        server_log = open(log_dir / "server.log", "ab", buffering=0)
+        server_proc = subprocess.Popen(
+            server_cmd,
+            cwd=str(ROOT_DIR),
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        if not wait_for_health(url):
+            print(f"后端没起来，查看日志: {log_dir / 'server.log'}", file=sys.stderr)
+            server_proc.terminate()
+            return 1
+    else:
+        try:
+            import uvicorn
+        except ImportError:
+            print('没装 uvicorn。装法: pip install -e ".[serve]"', file=sys.stderr)
+            return 2
 
-    try:
-        import uvicorn
-    except ImportError:
-        print('没装 uvicorn。装法: pip install -e ".[serve]"', file=sys.stderr)
-        return 2
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+        server = uvicorn.Server(config)
+        server_thread = threading.Thread(target=server.run, daemon=True, name="uvicorn")
+        server_thread.start()
 
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-    server = uvicorn.Server(config)
-    thread = threading.Thread(target=server.run, daemon=True, name="uvicorn")
-    thread.start()
+        if not wait_for_health(url):
+            print("后端没起来，放弃开窗口", file=sys.stderr)
+            server.should_exit = True
+            return 1
 
-    if not wait_for_health(url):
-        print("后端没起来，放弃开窗口", file=sys.stderr)
-        server.should_exit = True
-        return 1
+    def stop_server() -> None:
+        nonlocal server_proc, server_thread
+        if reused:
+            return
+        if server_proc is not None:
+            if server_proc.poll() is None:
+                server_proc.terminate()
+                try:
+                    server_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    server_proc.kill()
+            server_proc = None
+        if server_thread is not None:
+            if server is not None:
+                server.should_exit = True
+            server_thread.join(timeout=5)
+            server_thread = None
+
+    def server_alive() -> bool:
+        if server_proc is not None:
+            return server_proc.poll() is None
+        return server_thread is not None and server_thread.is_alive()
 
     print(f"服务已就绪: {url}")
 
@@ -467,19 +546,17 @@ def run_app(
             print(f"桌面窗口没起来（{type(exc).__name__}: {exc}），退回浏览器窗口", file=sys.stderr)
         else:
             print("窗口已关闭")
-            server.should_exit = True
-            thread.join(timeout=5)
+            stop_server()
             return 0
 
     if found is None:
         print("没找到 Edge/Chrome，请手动打开上面的地址。按 Ctrl+C 结束。")
         try:
-            while thread.is_alive():
+            while server_alive():
                 time.sleep(0.5)
         except KeyboardInterrupt:
             pass
-        server.should_exit = True
-        thread.join(timeout=5)
+        stop_server()
         return 0
 
     print("正在打开窗口…")
@@ -492,12 +569,11 @@ def run_app(
             print(f"已交给系统默认浏览器打开（页面没能在独立窗口里渲染）。")
             print("这种方式下窗口和本程序解绑：关闭窗口不会停服务，按 Ctrl+C 结束。")
         try:
-            while thread.is_alive():
+            while server_alive():
                 time.sleep(0.5)
         except KeyboardInterrupt:
             pass
-        server.should_exit = True
-        thread.join(timeout=5)
+        stop_server()
         print("已退出")
         return 0
 
@@ -510,13 +586,12 @@ def run_app(
             print("窗口已关闭")
         else:
             print("（--no-wait：窗口在后台，服务继续跑，按 Ctrl+C 结束）")
-            while thread.is_alive():
+            while server_alive():
                 time.sleep(0.5)
     except KeyboardInterrupt:
         pass
     finally:
         _kill_tree(proc)
-        server.should_exit = True
-        thread.join(timeout=5)
+        stop_server()
     print("已退出")
     return 0
