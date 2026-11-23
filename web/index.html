@@ -40,7 +40,7 @@
         </footer>
       </aside>
 
-      <!-- 主区：导航栏切换「对话 / 轨迹」 -->
+      <!-- 主区：导航栏切换「对话 / 日志」 -->
       <main class="main">
         <header class="topbar">
           <div class="topbar-title">
@@ -50,7 +50,8 @@
           <div class="topbar-right">
             <div class="view-switch" role="tablist" aria-label="视图切换">
               <button id="viewChat" class="view-tab active" role="tab" aria-selected="true">对话</button>
-              <button id="viewTrajectory" class="view-tab" role="tab" aria-selected="false">轨迹</button>
+              <button id="viewTrajectory" class="view-tab" role="tab" aria-selected="false">日志</button>
+              <button id="viewTeam" class="view-tab" role="tab" aria-selected="false">编队</button>
             </div>
             <div id="usage" class="usage muted"></div>
           </div>
@@ -83,7 +84,10 @@
             <label class="check"><input id="optTasks" type="checkbox" checked /> 任务图</label>
             <label class="check"><input id="optMemory" type="checkbox" checked /> 记忆</label>
             <label class="check"><input id="optMcp" type="checkbox" /> MCP</label>
+            <label class="check"><input id="optSubagent" type="checkbox" /> 子代理</label>
+            <label class="check"><input id="optTeam" type="checkbox" /> 编队工具</label>
           </div>
+
           <div class="input-row">
             <label for="task" class="sr-only">任务内容</label>
             <textarea id="task" rows="2" placeholder="输入任务描述，Ctrl+Enter 发送"></textarea>

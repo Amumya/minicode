@@ -40,6 +40,8 @@ class RunState:
     tasks: bool = False
     memory: bool = False
     mcp: bool = False
+    subagent: bool = False
+    team: bool = False
     parent_id: str | None = None      # 多轮对话：上一轮的 run id
 
     def to_dict(self, events: list[dict] | None = None) -> dict:
@@ -61,6 +63,8 @@ class RunState:
             "tasks": self.tasks,
             "memory": self.memory,
             "mcp": self.mcp,
+            "subagent": self.subagent,
+            "team": self.team,
             "parent_id": self.parent_id,
         }
         if events is not None:
@@ -203,6 +207,8 @@ class RedisStore:
             "tasks": int(run.tasks),
             "memory": int(run.memory),
             "mcp": int(run.mcp),
+            "subagent": int(run.subagent),
+            "team": int(run.team),
             "parent_id": run.parent_id or "",
         })
         # 用自增序号当 zset 分数，不用 created_at：
@@ -237,6 +243,8 @@ class RedisStore:
             tasks=bool(int(data.get("tasks", 0))),
             memory=bool(int(data.get("memory", 0))),
             mcp=bool(int(data.get("mcp", 0))),
+            subagent=bool(int(data.get("subagent", 0))),
+            team=bool(int(data.get("team", 0))),
             parent_id=(data.get("parent_id") or None),
         )
 

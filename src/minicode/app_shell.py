@@ -19,11 +19,13 @@
 from __future__ import annotations
 
 import ctypes
+import faulthandler
 import importlib.util
 import os
 import subprocess
 import sys
 import threading
+import traceback
 import time
 import urllib.error
 import urllib.request
@@ -69,6 +71,58 @@ def cache_busted_url(url: str) -> str:
     return f"{url}{sep}v={int(time.time() * 1000)}"
 
 
+def _prepare_qt_data_dirs(profile_dir: Path) -> None:
+    """提前建好 QtWebEngine 会用的目录。
+
+    实测（2026-11-23）：Chromium 渲染进程在部分 Windows 账号下创建
+    `%APPDATA%/python/QtWebEngine/minicode` 会报 FILE_ERROR_ACCESS_DENIED，
+    但同样路径主进程可以创建。先以主进程身份建好目录并让子进程直接复用，
+    避免启动时白屏/报错。
+    """
+    candidates = [
+        profile_dir / "storage",
+        profile_dir / "cache",
+        profile_dir / "default-storage",
+        profile_dir / "default-cache",
+    ]
+    for root in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")):
+        if root:
+            candidates.append(Path(root) / "python" / "QtWebEngine" / "minicode")
+            candidates.append(Path(root) / "minicode" / "QtWebEngine" / "minicode")
+    for path in candidates:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+
+def _install_crash_logging(workspace: Path | None) -> None:
+    """把 Python/线程异常和原生崩溃写进日志。
+
+    实测（2026-11-23）桌面进程在团队并发执行时整体退出，窗口和自带 Redis
+    一起没了，终端里看不到 Python traceback。faulthandler 能把原生崩溃栈落盘，
+    threading.excepthook 能记录团队线程里的未捕获异常，下次崩溃有据可查。
+    """
+    try:
+        log_dir = (workspace or Path.cwd()) / ".minicode"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handle = open(log_dir / "app-crash.log", "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+    faulthandler.enable(file=handle, all_threads=True)
+
+    def _excepthook(exc_type, exc, tb):
+        handle.write("\n[uncaught] " + "".join(traceback.format_exception(exc_type, exc, tb)))
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def _thread_hook(args):
+        handle.write(f"\n[thread {getattr(args.thread, 'name', '?')}] ")
+        handle.write("".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+
+    sys.excepthook = _excepthook
+    threading.excepthook = _thread_hook
+
+
 def _ensure_qt_flags() -> None:
     """给 QtWebEngine 补 Chromium 兼容参数。
 
@@ -76,9 +130,13 @@ def _ensure_qt_flags() -> None:
     窗口只加载 127.0.0.1 上的自家页面，所以默认补 --no-sandbox；
     用户/系统已经设置过 flags 时不覆盖。
     """
+    os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
     flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
     if "--no-sandbox" not in flags:
-        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --no-sandbox".strip()
+        flags = f"{flags} --no-sandbox".strip()
+    if "--disable-gpu" not in flags:
+        flags = f"{flags} --disable-gpu".strip()
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = flags
 
 
 def run_qt_window(

@@ -3,6 +3,8 @@ import test from "node:test";
 
 import type { AgentEvent } from "./format.ts";
 import {
+  subagentRecords,
+  teamViews,
   buildTaskBoard,
   canFollowup,
   canResume,
@@ -153,4 +155,50 @@ test("canFollowup 只在聊完之后为真", () => {
   assert.equal(canFollowup({ id: "a", status: "queued" }), false);
   assert.equal(canFollowup({ id: "a", status: "done" }), true);
   assert.equal(canFollowup({ id: "a", status: "error" }), true);
+});
+
+test("teamViews 从 team 工具事件还原成员", () => {
+  const teams = teamViews([
+    {
+      id: "run-1",
+      events: [
+        {
+          kind: "tool_call",
+          data: {
+            tool: "team",
+            step: 2,
+            meta: {
+              team: {
+                task: "审查登录",
+                members: [
+                  { name: "alice", role: "安全", ok: true, steps: 3, tokens: 12, output: "无高危问题" },
+                  { name: "bob", role: "性能", ok: false, steps: 2, tokens: 8, output: "", error: "超时" },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    },
+  ]);
+  assert.equal(teams.length, 1);
+  assert.equal(teams[0].task, "审查登录");
+  assert.equal(teams[0].members.length, 2);
+  assert.equal(teams[0].members[0].ok, true);
+  assert.equal(teams[0].members[1].error, "超时");
+});
+
+test("subagentRecords 提取 task 调用并按会话隔离", () => {
+  const records = subagentRecords([
+    { id: "r1", events: [
+      { kind: "tool_call", data: { step: 2, tool: "task",
+        args: { prompt: "数一下 tests" }, output: "19 个测试文件",
+        meta: { subagent_ok: true, subagent_steps: 2, subagent_tokens: 40, subagent_tool_calls: 3 } } },
+      { kind: "tool_call", data: { step: 3, tool: "bash", args: {}, output: "" } },
+    ] },
+  ]);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].prompt, "数一下 tests");
+  assert.equal(records[0].steps, 2);
+  assert.equal(records[0].ok, true);
 });

@@ -62,6 +62,8 @@ export interface CreateRunOptions {
   tasks?: boolean;
   memory?: boolean;
   mcp?: boolean;
+  subagent?: boolean;
+  team?: boolean;
 }
 
 export class ApiError extends Error {
@@ -148,6 +150,8 @@ export const api = {
       tasks: opts.tasks ?? false,
       memory: opts.memory ?? false,
       mcp: opts.mcp ?? false,
+      subagent: opts.subagent ?? false,
+      team: opts.team ?? false,
     };
     if (opts.workspace) body.workspace = opts.workspace;
     if (opts.model) body.model = opts.model;
@@ -184,6 +188,7 @@ export const EVENT_KINDS = [
   "assistant_delta",
   "stream_reset",
   "todo_reminder",
+  "agent_progress",
   "denied",
   "unknown_tool",
   "hook_error",

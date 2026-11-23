@@ -172,3 +172,10 @@ def test_empty_final_text_falls_back_to_stub(tmp_path):
     tool = TaskTool(provider=provider, settings=_settings(), build_tools=_registry)
     r = tool.run({"prompt": "查"}, tmp_path)
     assert "子代理没有给出结论" in r.content
+
+
+def test_report_stub_includes_error():
+    from minicode.subagent import SubagentReport, report_stub
+    text = report_stub(SubagentReport(ok=False, steps=2, stop_reason="error",
+                                      error="RuntimeError: boom"))
+    assert "RuntimeError: boom" in text

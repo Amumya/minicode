@@ -82,6 +82,17 @@ export function describeEvent(ev: AgentEvent): Described {
       return { label: "模型输出", detail: clip(str(d.text), 60), tone: "info" };
       case "stream_reset":
         return { label: "流式重试", detail: "模型输出从头开始（上下文过长重试）", tone: "info" };
+      case "agent_progress": {
+        const name = str(d.agent, "Agent");
+        const phase = str(d.phase);
+        return {
+          label: "Agent 进度",
+          detail: phase === "done"
+            ? `${name} 完成（${num(d.steps)} 步 / ${num(d.tokens)} token）`
+            : `${name} 开始工作`,
+          tone: phase === "done" ? "ok" : "info",
+        };
+      }
       case "todo_reminder":
         return { label: "计划提醒", detail: `连续 ${num(d.since) ?? "?"} 轮未更新 todo，已提醒模型`, tone: "warn" };
     case "thinking": {

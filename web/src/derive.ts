@@ -187,6 +187,98 @@ export function formatUsage(u: Usage): string {
   return parts.join(" · ");
 }
 
+/* ------------------------------------------------------------------ 子代理记录 */
+
+export interface SubagentRecord {
+  runId: string;
+  step: number;
+  prompt: string;
+  ok: boolean;
+  steps: number;
+  tokens: number;
+  toolCalls: number;
+  output: string;
+  failed: boolean;
+}
+
+/** 从当前会话的 `task` 工具调用里提取子代理记录；runs 只包含当前会话，天然按会话隔离。 */
+export function subagentRecords(runs: Array<{ id: string; events?: AgentEvent[] }>): SubagentRecord[] {
+  const out: SubagentRecord[] = [];
+  for (const run of runs) {
+    for (const ev of run.events ?? []) {
+      if (ev.kind !== "tool_call") continue;
+      const data = rec(ev.data);
+      if (data.tool !== "task") continue;
+      const args = rec(data.args);
+      const meta = rec(data.meta);
+      out.push({
+        runId: run.id,
+        step: num(data.step),
+        prompt: String(args.prompt ?? ""),
+        ok: meta.subagent_ok === true,
+        steps: num(meta.subagent_steps),
+        tokens: num(meta.subagent_tokens),
+        toolCalls: num(meta.subagent_tool_calls),
+        output: String(data.output ?? ""),
+        failed: data.failed === true,
+      });
+    }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ 编队 */
+
+export interface TeamMemberView {
+  name: string;
+  role: string;
+  ok: boolean;
+  steps: number;
+  tokens: number;
+  output: string;
+  error: string;
+}
+
+export interface TeamView {
+  runId: string;
+  task: string;
+  step: number;
+  members: TeamMemberView[];
+}
+
+/** 从 run 的 tool_call 事件里还原 `team` 工具的编队记录（meta.team 由后端写入）。 */
+export function teamViews(runs: Array<{ id: string; events?: AgentEvent[] }>): TeamView[] {
+  const out: TeamView[] = [];
+  for (const run of runs) {
+    for (const ev of run.events ?? []) {
+      if (ev.kind !== "tool_call") continue;
+      const data = rec(ev.data);
+      if (data.tool !== "team") continue;
+      const team = rec(rec(data.meta).team);
+      const raw = team.members;
+      if (!Array.isArray(raw)) continue;
+      out.push({
+        runId: run.id,
+        task: String(team.task ?? ""),
+        step: num(data.step),
+        members: raw.map((m) => {
+          const item = rec(m);
+          return {
+            name: String(item.name ?? "?"),
+            role: String(item.role ?? ""),
+            ok: item.ok === true,
+            steps: num(item.steps),
+            tokens: num(item.tokens),
+            output: String(item.output ?? ""),
+            error: String(item.error ?? ""),
+          };
+        }),
+      });
+    }
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ 任务看板 */
 
 export interface TaskBoard {

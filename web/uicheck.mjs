@@ -8,7 +8,7 @@
  * 用法（在 web/ 目录下）：npm install --no-save jsdom && node uicheck.mjs
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -68,6 +68,17 @@ const HISTORY_RUN = {
     { kind: "tool_call", ts: nowSec(), data: {
         step: 1, tool: "bash", args: { command: "Get-ChildItem" },
         exit_code: 0, failed: false, output: "aaa.txt\nbbb.txt\nccc.txt" } },
+      { kind: "tool_call", ts: nowSec(), data: {
+          step: 2, tool: "task", args: { prompt: "数一下 tests 目录" },
+          exit_code: 0, failed: false, output: "19 个测试文件",
+          meta: { subagent_ok: true, subagent_steps: 2, subagent_tokens: 40, subagent_tool_calls: 3 } } },
+      { kind: "tool_call", ts: nowSec(), data: {
+          step: 3, tool: "team", args: { task: "审查登录模块" },
+          exit_code: 0, failed: false, output: "成员结论",
+          meta: { team: { task: "审查登录模块", members: [
+            { name: "alice", role: "安全", ok: true, steps: 4, tokens: 88, tool_calls: 5, output: "无高危问题", error: "" },
+            { name: "bob", role: "性能", ok: false, steps: 2, tokens: 40, tool_calls: 1, output: "", error: "超时" },
+          ] } } } },
   ],
 };
 
@@ -200,9 +211,19 @@ check("五个开关默认全选", defaultSwitches.every((sel) => doc.querySelect
 
 // ---------------------------------------------------------------- 视图切换（没有右侧栏）
 check("没有右侧详情栏", !doc.querySelector("#inspector"));
-check("导航栏有「对话 / 轨迹」切换",
+check("导航栏有「对话 / 日志」切换",
   !!doc.querySelector("#viewChat") && !!doc.querySelector("#viewTrajectory"));
 check("默认停在对话视图", doc.querySelector("#viewChat").classList.contains("active"));
+check("导航栏有「编队」切换", !!doc.querySelector("#viewTeam"));
+check("子代理/编队开关默认关闭",
+  doc.querySelector("#optSubagent").checked === false && doc.querySelector("#optTeam").checked === false);
+doc.querySelector("#viewTeam").click();
+await sleep(200);
+check("切到编队视图", doc.querySelector("#viewTeam").classList.contains("active") &&
+  doc.querySelector("#chat").classList.contains("team") &&
+  (doc.querySelector("#chat")?.textContent ?? "").includes("编队"));
+doc.querySelector("#viewChat").click();
+await sleep(100);
 
 // ---------------------------------------------------------------- 打开历史会话
 doc.querySelector("#conversations .conv").click();
@@ -210,13 +231,37 @@ await sleep(150);
 check("点会话后加载出对话", doc.querySelectorAll("#chat .turn").length === 1);
 check("历史回答走 Markdown 渲染", doc.querySelector("#chat .answer strong")?.textContent === "12",
   doc.querySelector("#chat .answer")?.textContent ?? "");
-check("对话视图不显示工具原始信息（在轨迹里）",
+  check("子代理不再用下拉框", doc.querySelector("#subagentPanel") === null &&
+    doc.querySelector("#subagentList") === null);
+
+  // 编队：多 Agent 仪表盘（Agent 网络 + 协作 + 任务板 + 事件）
+  doc.querySelector("#viewTeam").click();
+  await sleep(200);
+  check("编队是多 Agent 仪表盘", !!doc.querySelector("#chat .team-dashboard") &&
+    !!doc.querySelector("#chat .agent-network") && !!doc.querySelector("#chat .team-hero"));
+  const agentCards = [...doc.querySelectorAll("#chat .agent-card")];
+  check("Agent 网络包含主控/成员/子代理", agentCards.length >= 4, `${agentCards.length} 个 Agent`);
+  const netText = doc.querySelector("#chat .agent-network")?.textContent ?? "";
+  check("Agent 卡片显示任务与 Token 指标",
+    netText.includes("主控") && netText.includes("alice") && netText.includes("Token"));
+  const taskRows = [...doc.querySelectorAll("#chat .task-row")];
+  check("协作任务板列出成员", taskRows.length >= 4, `${taskRows.length} 行`);
+  const eventRows = [...doc.querySelectorAll("#chat .event-row:not(.event-head)")];
+  check("事件检查列出调用记录", eventRows.length >= 2, `${eventRows.length} 条`);
+  const aliceCard = agentCards.find((card) => card.textContent?.includes("alice"));
+  aliceCard?.click();
+  await sleep(120);
+  check("点击 Agent 卡片联动协作详情",
+    (doc.querySelector("#chat .agent-detail")?.textContent ?? "").includes("alice"));
+  doc.querySelector("#viewChat").click();
+  await sleep(100);
+check("对话视图不显示工具原始信息（在日志里）",
   !doc.querySelector("#chat .tool-list"));
 check("对话视图不输出 thinking（没有思考块）",
   !doc.querySelector("#chat details.thoughts") &&
   !(doc.querySelector("#chat")?.textContent ?? "").includes("先看看目录结构"));
 
-// 轨迹视图：追加式全事件日志
+// 日志视图：追加式全事件日志
 doc.querySelector("#viewTrajectory").click();
 await sleep(200);
 check("切到轨迹视图", doc.querySelector("#viewTrajectory").classList.contains("active") &&
@@ -269,6 +314,8 @@ doc.querySelector("#optPlan").checked = true;
 check("MCP 开关默认关闭（要显式开才起外部进程）",
   doc.querySelector("#optMcp").checked === false);
 doc.querySelector("#optMcp").checked = true;
+doc.querySelector("#optSubagent").checked = true;
+doc.querySelector("#optTeam").checked = true;
 doc.querySelector("#submit").click();
 await sleep(120);
 const es = sources.at(-1);
@@ -285,8 +332,11 @@ check("提交 body 带上了任务和开关",
   sentBody.task === "列出 tests 目录" && sentBody.plan === true &&
   sentBody.include_files === true && sentBody.tasks === true &&
   sentBody.memory === true && sentBody.mcp === true);
-  check("提交时不携带 max_steps（由后端默认 0 = 不限）", sentBody.max_steps === undefined,
-    String(sentBody.max_steps));
+check("提交 body 带上了子代理/编队开关",
+  sentBody.subagent === true && sentBody.team === true,
+  `subagent=${sentBody.subagent} team=${sentBody.team}`);
+check("提交时不携带 max_steps（由后端默认 0 = 不限）", sentBody.max_steps === undefined,
+  String(sentBody.max_steps));
 
 const before = calls.filter((c) => c === "POST /runs").length;
 doc.querySelector("#task").value = "再开一个";

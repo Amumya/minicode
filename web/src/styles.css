@@ -1356,3 +1356,290 @@ details.traj-raw-json > summary {
   border: 1px solid var(--border);
   letter-spacing: 0.02em;
 }
+
+
+
+/* ------------------------------------------------------------------ 编队仪表盘（参考 Agent Teams 网络视图） */
+.chat.team {
+  display: block;
+  overflow-y: auto;
+  padding: 20px clamp(14px, 2.4vw, 32px) 28px;
+  background: linear-gradient(180deg, #f7f8fb 0%, #f4f6fa 100%);
+}
+.team-dashboard { display: grid; gap: 16px; }
+.team-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+}
+.team-hero-kicker {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.team-hero-title {
+  margin: 3px 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.team-hero-sub {
+  margin: 0;
+  max-width: 640px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.team-hero-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.team-hero-stat {
+  min-width: 86px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-soft);
+  display: grid;
+  gap: 2px;
+}
+.team-hero-stat-label { font-size: 10px; color: var(--muted); }
+.team-hero-stat strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.team-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.85fr) minmax(280px, 1fr);
+  align-items: start;
+}
+.team-main, .team-side { display: grid; gap: 16px; min-width: 0; }
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  padding: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 10px;
+}
+.panel-titles { min-width: 0; }
+.panel-title { font-size: 13px; font-weight: 650; }
+.panel-sub { margin-top: 2px; font-size: 11px; color: var(--muted); }
+.panel-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 11px;
+}
+.agent-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.agent-card {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.agent-card:hover { border-color: #b8c2d6; box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08); }
+.agent-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.agent-card.lead { background: linear-gradient(180deg, #f8faff 0%, #ffffff 70%); }
+.agent-card.failed { border-left: 3px solid var(--error); }
+.agent-card.ok { border-left: 3px solid var(--ok); }
+.agent-card-head { display: flex; align-items: center; gap: 9px; }
+.agent-avatar {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.agent-avatar.tone-0 { background: #e8f0fe; color: #2563eb; }
+.agent-avatar.tone-1 { background: #e6f7ee; color: #15803d; }
+.agent-avatar.tone-2 { background: #fff4e0; color: #b45309; }
+.agent-avatar.tone-3 { background: #f3e8ff; color: #7e22ce; }
+.agent-avatar.tone-4 { background: #fde8ef; color: #be123c; }
+.agent-names { min-width: 0; flex: 1; }
+.agent-name {
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-role { margin-top: 1px; font-size: 11px; color: var(--muted); }
+.agent-state {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.agent-state.ok { background: rgba(21, 128, 61, 0.1); color: var(--ok); }
+.agent-state.failed { background: rgba(220, 38, 38, 0.1); color: var(--error); }
+.agent-task {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.agent-metrics { display: flex; gap: 6px; flex-wrap: wrap; }
+.agent-metric {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.agent-detail .detail-task {
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--bg-soft);
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 120px;
+  overflow: auto;
+}
+.detail-label { margin: 10px 0 4px; font-size: 11px; color: var(--muted); }
+.detail-output {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--bg-soft);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.task-tabs { display: flex; gap: 6px; padding: 2px 2px 8px; }
+.task-tab {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.task-tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.task-rows { display: grid; gap: 6px; max-height: 260px; overflow: auto; }
+.task-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+}
+.task-row.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.task-row-name {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-row-role { font-size: 10.5px; color: var(--muted); }
+.event-table { display: grid; gap: 4px; }
+.event-row {
+  display: grid;
+  grid-template-columns: 72px 56px minmax(120px, 1.1fr) 90px minmax(0, 1.4fr);
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 11.5px;
+}
+.event-row:nth-child(odd) { background: var(--bg-soft); }
+.event-head { color: var(--muted); font-size: 10.5px; background: transparent !important; }
+.event-step { color: var(--muted); font-variant-numeric: tabular-nums; }
+.event-kind { font-weight: 600; }
+.event-name, .event-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-status { color: var(--muted); }
+.team-empty { padding-top: 10vh; }
+.team-empty-mark {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 10px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 20px;
+}
+@media (max-width: 980px) {
+  .team-layout { grid-template-columns: 1fr; }
+  .team-hero { flex-direction: column; }
+}
+
+/* Agent 网络：主控在顶部居中，子节点用连接线收拢 */
+.agent-lead-row { display: flex; justify-content: center; padding: 4px 0 0; }
+.agent-lead-row .agent-card { width: min(380px, 100%); }
+.agent-connector {
+  position: relative;
+  width: 1px;
+  height: 26px;
+  margin: 0 auto;
+  background: var(--border);
+}
+.agent-connector::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: min(86%, 760px);
+  height: 1px;
+  transform: translateX(-50%);
+  background: var(--border);
+}
+.network-toolbar { display: flex; gap: 6px; margin: 10px 0 10px; flex-wrap: wrap; }
+.network-chip {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.network-chip.ok { color: var(--ok); background: rgba(21, 128, 61, 0.08); }
+.network-chip.failed { color: var(--error); background: rgba(220, 38, 38, 0.08); }

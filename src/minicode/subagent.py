@@ -65,8 +65,11 @@ def run_subagent(
     build_tools: Callable[[], Registry],
     max_steps: int = 64,
     system: str = "",
+    on_progress: Callable[[dict], None] | None = None,
 ) -> SubagentReport:
     """跑一个独立的子任务。返回结论 + 花费，不返回中间过程。"""
+    if on_progress:
+        on_progress({"agent": "子代理", "role": "独立子代理", "phase": "start"})
     child_settings = Settings(
         api_key=settings.api_key,
         base_url=settings.base_url,
@@ -89,6 +92,12 @@ def run_subagent(
         return SubagentReport(ok=False, steps=0, stop_reason="error",
                               error=f"{type(exc).__name__}: {exc}")
 
+    if on_progress:
+        on_progress({
+            "agent": "子代理", "role": "独立子代理", "phase": "done",
+            "ok": result.ok, "steps": result.steps,
+            "tokens": result.usage.get("input_tokens", 0) + result.usage.get("output_tokens", 0),
+        })
     return SubagentReport(
         ok=result.ok,
         steps=result.steps,
@@ -126,12 +135,14 @@ class TaskTool:
         build_tools: Callable[[], Registry],
         max_steps: int = 64,
         system: str = "",
+        on_progress: Callable[[dict], None] | None = None,
     ) -> None:
         self.provider = provider
         self.settings = settings
         self.build_tools = build_tools
         self.max_steps = max_steps
         self.system = system
+        self.on_progress = on_progress
         self.reports: list[SubagentReport] = []
 
     def run(self, args: dict, cwd: Path) -> ToolResult:
@@ -150,6 +161,7 @@ class TaskTool:
             build_tools=self.build_tools,
             max_steps=max_steps,
             system=self.system,
+            on_progress=self.on_progress,
         )
         self.reports.append(report)
 
@@ -172,7 +184,10 @@ class TaskTool:
 
 
 def report_stub(report: SubagentReport) -> str:
-    return (
+    text = (
         f"子代理没有给出结论（ok={report.ok}, stop={report.stop_reason}, "
         f"steps={report.steps}）"
     )
+    if report.error:
+        text += f"；错误：{report.error}"
+    return text

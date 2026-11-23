@@ -111,6 +111,8 @@ class RunRequest(BaseModel):
     tasks: bool = False
     memory: bool = False
     mcp: bool = False
+    subagent: bool = False
+    team: bool = False
 
 
 class FollowupRequest(BaseModel):
@@ -282,13 +284,35 @@ def create_app(
                     warnings=mcp_session.report["warnings"],
                 )
 
+            extra_tools = list(mcp_tools)
+            if state.subagent:
+                from minicode.subagent import TaskTool
+
+                extra_tools.append(TaskTool(
+                    provider=run_provider,
+                    settings=run_settings,
+                    build_tools=lambda: build_registry(files=state.include_files),
+                    max_steps=64,
+                    on_progress=lambda payload: rec.add("agent_progress", **payload),
+                ))
+            if state.team:
+                from minicode.team import TeamTool
+
+                extra_tools.append(TeamTool(
+                    provider=run_provider,
+                    settings=run_settings,
+                    build_tools=lambda: build_registry(files=state.include_files),
+                    max_steps=32,
+                    on_progress=lambda payload: rec.add("agent_progress", **payload),
+                ))
+
             result = run_loop(
                 state.task,
                 provider=run_provider,
                 tools=build_registry(
                     files=state.include_files, todo=todo,
                     skills=skills_loader, tasks=_tasks_for(state),
-                    extra=list(mcp_tools),
+                    extra=extra_tools,
                     memory=_memory_for(state),
                     compact=state.compact),
                 settings=run_settings,
@@ -302,6 +326,8 @@ def create_app(
                     tasks_hint=state.tasks,
                     mcp_servers=mcp_servers or None,
                     memory_hint=state.memory,
+                    subagent_hint=state.subagent,
+                    team_hint=state.team,
                     memory_snapshot=(
                         _memory_for(state).snapshot(state.task)
                         if state.memory else None
@@ -508,6 +534,8 @@ def create_app(
             compact=req.compact,
             tasks=req.tasks,
             memory=req.memory,
+            subagent=req.subagent,
+            team=req.team,
             mcp=req.mcp,
         )
         st.create(state)
@@ -664,6 +692,8 @@ def create_app(
             compact=parent.compact,
             tasks=parent.tasks,
             memory=parent.memory,
+            subagent=parent.subagent,
+            team=parent.team,
             mcp=parent.mcp,
         )
         st.create(state)

@@ -3,6 +3,13 @@ import test from "node:test";
 
 import { clip, describeEvent, formatTime, summarizeResult } from "./format.ts";
 
+test("agent_progress 事件有说明", () => {
+  const d = describeEvent({ kind: "agent_progress", data: { agent: "alice", phase: "done", steps: 3, tokens: 20 } });
+  assert.equal(d.label, "Agent 进度");
+  assert.match(d.detail, /alice/);
+  assert.equal(d.tone, "ok");
+});
+
 test("todo_reminder 事件有说明", () => {
   const d = describeEvent({ kind: "todo_reminder", data: { since: 2 } });
   assert.equal(d.label, "计划提醒");

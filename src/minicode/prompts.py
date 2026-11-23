@@ -42,6 +42,8 @@ def default_system(
     memory_hint: bool = False,
     memory_snapshot: str | None = None,
     mcp_servers: list[str] | None = None,
+    subagent_hint: bool = False,
+    team_hint: bool = False,
 ) -> str:
     """拼出系统提示词。
 
@@ -86,6 +88,18 @@ def default_system(
             "用 blockedBy 表达「这一步依赖哪几步」，然后按顺序 claim_task 认领、"
             "做完 complete_task 收尾 —— 完成时会告诉你解锁了哪些任务。"
             "简单的一两步任务直接用 bash 做，不要为了用而用。"
+        )
+
+    if subagent_hint:
+        text += (
+            "\n\n有一个 `task` 工具：把独立的小任务交给子代理，只拿回结论。"
+            "适合「要翻很多文件但只想要结论」；子代理中间过程不进你的上下文。"
+        )
+
+    if team_hint:
+        text += (
+            "\n\n有一个 `team` 工具：给一个总任务和 2–6 个带角色的成员，"
+            "成员并行工作、各自返回结论。适合多角度审查、并行调查或互相独立的子任务。"
         )
 
     if mcp_servers:

@@ -32,6 +32,9 @@ import { describeToolCall } from "./chat.ts";
 import {
   formatUsage,
   latestPlan,
+  teamViews,
+  subagentRecords,
+  type SubagentRecord,
   summarizeUsage,
   type PlanItem,
 } from "./derive.ts";
@@ -124,8 +127,11 @@ const main = {
   optTasks: el<HTMLInputElement>("optTasks"),
   optMemory: el<HTMLInputElement>("optMemory"),
   optMcp: el<HTMLInputElement>("optMcp"),
+  optSubagent: el<HTMLInputElement>("optSubagent"),
+  optTeam: el<HTMLInputElement>("optTeam"),
   viewChat: el<HTMLButtonElement>("viewChat"),
   viewTrajectory: el<HTMLButtonElement>("viewTrajectory"),
+  viewTeam: el<HTMLButtonElement>("viewTeam"),
 };
 
 /* ------------------------------------------------------------------ 展开状态 */
@@ -175,7 +181,7 @@ function detailsBlock(
 
 /* ------------------------------------------------------------------ 状态 */
 
-type ViewMode = "chat" | "trajectory";
+type ViewMode = "chat" | "trajectory" | "team";
 
 let workspaces: Workspace[] = [];
 let conversations: Conversation[] = [];
@@ -302,7 +308,7 @@ function renderTurn(turn: Turn, live = false): HTMLElement {
   if (turn.error) {
     bubble.append(h("div", { class: "answer error" }, `出错：${turn.error}`));
   } else if (turn.status === "error") {
-    bubble.append(h("div", { class: "answer error" }, "执行失败（切换到「轨迹」查看原始信息）"));
+    bubble.append(h("div", { class: "answer error" }, "执行失败（切换到「日志」查看原始信息）"));
   } else {
     if (outcome === "interrupted") {
       const label = turn.stopReason === "max_steps"
@@ -616,6 +622,326 @@ function renderTrajectory(): void {
   main.chat.scrollTop = trajFollowTail ? main.chat.scrollHeight : scrollTop;
 }
 
+interface AgentCardData {
+  key: string;
+  name: string;
+  role: string;
+  task: string;
+  status: string;
+  ok: boolean;
+  steps: number;
+  tokens: number;
+  toolCalls: number;
+  output: string;
+  error: string;
+  kind: "lead" | "member" | "subagent";
+}
+
+interface DashboardEvent {
+  step: number;
+  kind: string;
+  name: string;
+  status: string;
+  detail: string;
+}
+
+let selectedAgentKey = "";
+let agentStatusFilter: "all" | "ok" | "failed" = "all";
+
+function buildAgentCards(teams: ReturnType<typeof teamViews>, subs: SubagentRecord[]): AgentCardData[] {
+  const cards: AgentCardData[] = [];
+  teams.forEach((team, index) => {
+    const done = team.members.filter((member) => member.ok).length;
+    const steps = team.members.reduce((sum, member) => sum + member.steps, 0);
+    const tokens = team.members.reduce((sum, member) => sum + member.tokens, 0);
+    cards.push({
+      key: `lead-${index}`,
+      name: "主控",
+      role: "Lead · 编队派发",
+      task: team.task || "编队任务",
+      status: done === team.members.length ? "全部完成" : `${done}/${team.members.length} 完成`,
+      ok: done === team.members.length,
+      steps,
+      tokens,
+      toolCalls: 0,
+      output: `派发任务：${team.task}\n\n成员：${team.members.map((m) => `${m.name}（${m.role}）`).join("、")}`,
+      error: "",
+      kind: "lead",
+    });
+    team.members.forEach((member, memberIndex) => {
+      cards.push({
+        key: `team-${index}-${memberIndex}`,
+        name: member.name,
+        role: member.role || "成员",
+        task: team.task || "编队任务",
+        status: member.ok ? "完成" : "失败",
+        ok: member.ok,
+        steps: member.steps,
+        tokens: member.tokens,
+        toolCalls: 0,
+        output: member.output,
+        error: member.error,
+        kind: "member",
+      });
+    });
+  });
+  subs.forEach((record, index) => {
+    cards.push({
+      key: `sub-${index}`,
+      name: `子代理 #${index + 1}`,
+      role: "独立子代理",
+      task: record.prompt,
+      status: record.ok ? "完成" : "失败",
+      ok: record.ok,
+      steps: record.steps,
+      tokens: record.tokens,
+      toolCalls: record.toolCalls,
+      output: record.output,
+      error: "",
+      kind: "subagent",
+    });
+  });
+  return cards;
+}
+
+function buildDashboardEvents(teams: ReturnType<typeof teamViews>, subs: SubagentRecord[]): DashboardEvent[] {
+  const events: DashboardEvent[] = [];
+  teams.forEach((team, index) => {
+    const done = team.members.filter((member) => member.ok).length;
+    events.push({
+      step: team.step,
+      kind: "编队",
+      name: team.task || `编队 #${index + 1}`,
+      status: `${done}/${team.members.length} 完成`,
+      detail: team.members.map((member) => member.name).join("、"),
+    });
+  });
+  subs.forEach((record, index) => {
+    events.push({
+      step: record.step,
+      kind: "子代理",
+      name: shortTitle(record.prompt || `子代理 #${index + 1}`, 48),
+      status: record.ok ? "完成" : "失败",
+      detail: `${record.steps} 步 · ${record.tokens} token · ${record.toolCalls} 次工具`,
+    });
+  });
+  return events;
+}
+
+function doneCount(agents: AgentCardData[]): number {
+  return agents.filter((agent) => agent.ok).length;
+}
+
+function toneOf(name: string): number {
+  let sum = 0;
+  for (const ch of name) sum += ch.codePointAt(0) ?? 0;
+  return sum % 5;
+}
+
+function renderAgentCard(agent: AgentCardData): HTMLElement {
+  const selected = agent.key === selectedAgentKey;
+  const card = h("article", {
+    class: `agent-card tone-${toneOf(agent.name)} ${agent.ok ? "ok" : "failed"} ` +
+      `${agent.kind === "lead" ? "lead" : ""} ${selected ? "selected" : ""}`,
+    title: agent.task,
+  });
+  const head = h("div", { class: "agent-card-head" });
+  const avatar = h("span", { class: `agent-avatar tone-${toneOf(agent.name)}` },
+    agent.kind === "lead" ? "主" : (agent.name.slice(0, 1).toUpperCase() || "A"));
+  const names = h("div", { class: "agent-names" });
+  names.append(h("div", { class: "agent-name" }, agent.name));
+  names.append(h("div", { class: "agent-role" }, agent.role));
+  head.append(avatar, names,
+    h("span", { class: `agent-state ${agent.ok ? "ok" : "failed"}` }, agent.status));
+  card.append(head);
+  card.append(h("p", { class: "agent-task" }, shortTitle(agent.task || "（无任务描述）", 72)));
+  const metrics = h("div", { class: "agent-metrics" });
+  metrics.append(
+    h("span", { class: "agent-metric" }, `${agent.tokens.toLocaleString()} Token`),
+    h("span", { class: "agent-metric" }, `${agent.steps} 步`),
+    h("span", { class: "agent-metric" },
+      agent.kind === "subagent" ? `${agent.toolCalls} 工具` : agent.kind === "lead" ? "Lead" : "成员"),
+  );
+  card.append(metrics);
+  card.addEventListener("click", () => {
+    selectedAgentKey = agent.key;
+    render();
+  });
+  return card;
+}
+
+function renderTeam(): void {
+  main.chat.className = "chat team";
+  main.chat.replaceChildren();
+  const teams = teamViews(runs);
+  const subs = subagentRecords(runs);
+  const agents = buildAgentCards(teams, subs);
+  const events = buildDashboardEvents(teams, subs);
+  if (agents.length === 0) {
+    main.chat.append(h("div", { class: "empty team-empty" },
+      h("div", { class: "team-empty-mark" }, "⌘"),
+      h("p", { class: "empty-title" }, "多 Agent 编队"),
+      h("p", { class: "muted" }, "开启「子代理」或「编队工具」后派发任务，Agent 和子代理会在这里汇合。")));
+    return;
+  }
+  if (!agents.some((agent) => agent.key === selectedAgentKey)) {
+    selectedAgentKey = agents[0].key;
+  }
+  const selected = agents.find((agent) => agent.key === selectedAgentKey) ?? agents[0];
+  const done = agents.filter((agent) => agent.ok).length;
+  const failed = agents.length - done;
+
+  const dashboard = h("section", { class: "team-dashboard" });
+  const hero = h("header", { class: "team-hero" });
+  const heroLeft = h("div", {});
+  heroLeft.append(h("div", { class: "team-hero-kicker" }, "AGENT NETWORK / 编队"));
+  heroLeft.append(h("h1", { class: "team-hero-title" }, "多 Agent 编队"));
+  heroLeft.append(h("p", { class: "team-hero-sub" },
+    "在同一时间线上，观察 Agent 与子代理的任务、Token 与结论。点击卡片查看详情。"));
+  hero.append(heroLeft);
+  const heroStats = h("div", { class: "team-hero-stats" });
+  const stat = (label: string, value: string) => {
+    const box = h("div", { class: "team-hero-stat" });
+    box.append(h("span", { class: "team-hero-stat-label" }, label));
+    box.append(h("strong", {}, value));
+    return box;
+  };
+  heroStats.append(
+    stat("Agent", String(agents.length)),
+    stat("运行中", "0"),
+    stat("工作项", String(teams.length + subs.length)),
+    stat("事件", String(events.length)),
+  );
+  hero.append(heroStats);
+  dashboard.append(hero);
+
+  const layout = h("div", { class: "team-layout" });
+  const mainCol = h("div", { class: "team-main" });
+
+  const network = h("section", { class: "panel agent-network" });
+  const netHead = h("div", { class: "panel-head" });
+  netHead.append(h("div", { class: "panel-titles" },
+    h("div", { class: "panel-title" }, "Agent 网络"),
+    h("div", { class: "panel-sub" }, "Agent 与子代理的调用记录 · 点击卡片高亮联动")));
+  netHead.append(h("span", { class: "panel-badge" }, `${agents.length} 个 Agent`));
+  network.append(netHead);
+  const lead = agents.find((agent) => agent.kind === "lead");
+  const rest = lead ? agents.filter((agent) => agent !== lead) : agents;
+  if (lead) {
+    const leadRow = h("div", { class: "agent-lead-row" });
+    leadRow.append(renderAgentCard(lead));
+    network.append(leadRow);
+    if (rest.length) network.append(h("div", { class: "agent-connector" }));
+  }
+  const toolbar = h("div", { class: "network-toolbar" });
+  toolbar.append(
+    h("span", { class: "network-chip" }, `全部 ${agents.length}`),
+    h("span", { class: "network-chip ok" }, `完成 ${doneCount(agents)}`),
+    h("span", { class: "network-chip failed" }, `失败 ${agents.length - doneCount(agents)}`),
+  );
+  network.append(toolbar);
+  const grid = h("div", { class: "agent-grid" });
+  for (const agent of rest) grid.append(renderAgentCard(agent));
+  network.append(grid);
+  mainCol.append(network);
+
+  const eventPanel = h("section", { class: "panel team-events" });
+  const eventHead = h("div", { class: "panel-head" });
+  eventHead.append(h("div", { class: "panel-titles" },
+    h("div", { class: "panel-title" }, "事件检查"),
+    h("div", { class: "panel-sub" }, "编队与子代理的调用时间线")));
+  eventHead.append(h("span", { class: "panel-badge" }, `${events.length} 条`));
+  eventPanel.append(eventHead);
+  const table = h("div", { class: "event-table" });
+  const tHead = h("div", { class: "event-row event-head" });
+  ["步骤", "类型", "对象", "状态", "详情"].forEach((label) =>
+    tHead.append(h("span", {}, label)));
+  table.append(tHead);
+  for (const ev of events) {
+    const row = h("div", { class: "event-row" });
+    row.append(
+      h("span", { class: "event-step" }, `第 ${ev.step} 步`),
+      h("span", { class: "event-kind" }, ev.kind),
+      h("span", { class: "event-name" }, ev.name),
+      h("span", { class: "event-status" }, ev.status),
+      h("span", { class: "event-detail" }, ev.detail),
+    );
+    table.append(row);
+  }
+  eventPanel.append(table);
+  mainCol.append(eventPanel);
+  layout.append(mainCol);
+
+  const side = h("aside", { class: "team-side" });
+
+  const detail = h("section", { class: "panel agent-detail" });
+  const detailHead = h("div", { class: "panel-head" });
+  detailHead.append(h("div", { class: "panel-titles" },
+    h("div", { class: "panel-title" }, selected.name),
+    h("div", { class: "panel-sub" }, `Agent 协作 · ${selected.role}`)));
+  detailHead.append(h("span", { class: `agent-state ${selected.ok ? "ok" : "failed"}` },
+    selected.status));
+  detail.append(detailHead);
+  detail.append(h("div", { class: "detail-task" }, selected.task || "（无任务描述）"));
+  const detailMetrics = h("div", { class: "agent-metrics" });
+  detailMetrics.append(
+    h("span", { class: "agent-metric" }, `${selected.tokens.toLocaleString()} Token`),
+    h("span", { class: "agent-metric" }, `${selected.steps} 步`),
+  );
+  detail.append(detailMetrics);
+  detail.append(h("div", { class: "detail-label" }, "结论"));
+  detail.append(h("pre", { class: "detail-output" },
+    selected.error || selected.output || "（还没有结论）"));
+  side.append(detail);
+
+  const board = h("section", { class: "panel task-board" });
+  const boardHead = h("div", { class: "panel-head" });
+  boardHead.append(h("div", { class: "panel-titles" },
+    h("div", { class: "panel-title" }, "协作任务"),
+    h("div", { class: "panel-sub" }, `${done}/${agents.length} 完成 · ${failed} 失败`)));
+  board.append(boardHead);
+  const tabs = h("div", { class: "task-tabs" });
+  const tabDefs: Array<["all" | "ok" | "failed", string, number]> = [
+    ["all", "全部", agents.length],
+    ["ok", "完成", done],
+    ["failed", "失败", failed],
+  ];
+  for (const [key, label, count] of tabDefs) {
+    const tab = h("button", {
+      class: `task-tab ${agentStatusFilter === key ? "active" : ""}`,
+      type: "button",
+    }, `${label} ${count}`);
+    tab.addEventListener("click", () => {
+      agentStatusFilter = key;
+      render();
+    });
+    tabs.append(tab);
+  }
+  board.append(tabs);
+  const rows = agents.filter((agent) =>
+    agentStatusFilter === "all" || (agentStatusFilter === "ok" ? agent.ok : !agent.ok));
+  const rowList = h("div", { class: "task-rows" });
+  for (const agent of rows) {
+    const row = h("button", {
+      class: `task-row ${agent.key === selected.key ? "selected" : ""}`,
+      type: "button",
+    });
+    row.append(h("span", { class: "task-row-name" }, agent.name));
+    row.append(h("span", { class: "task-row-role" }, agent.role));
+    row.append(h("span", { class: `agent-state ${agent.ok ? "ok" : "failed"}` }, agent.status));
+    row.addEventListener("click", () => {
+      selectedAgentKey = agent.key;
+      render();
+    });
+    rowList.append(row);
+  }
+  board.append(rowList);
+  side.append(board);
+  layout.append(side);
+  dashboard.append(layout);
+  main.chat.append(dashboard);
+}
+
 /* ------------------------------------------------------------------ 实时增量渲染（对话视图） */
 
 interface LiveView {
@@ -809,8 +1135,10 @@ function updateTopbarUsage(): void {
 function renderViewTabs(): void {
   main.viewChat.classList.toggle("active", viewMode === "chat");
   main.viewTrajectory.classList.toggle("active", viewMode === "trajectory");
+  main.viewTeam.classList.toggle("active", viewMode === "team");
   main.viewChat.setAttribute("aria-selected", String(viewMode === "chat"));
   main.viewTrajectory.setAttribute("aria-selected", String(viewMode === "trajectory"));
+  main.viewTeam.setAttribute("aria-selected", String(viewMode === "team"));
 }
 
 function setView(mode: ViewMode): void {
@@ -895,6 +1223,7 @@ function render(): void {
     updateTopbarUsage();
     renderConversations();
     if (viewMode === "chat") renderChat();
+    else if (viewMode === "team") renderTeam();
     else renderTrajectory();
   });
 }
@@ -989,6 +1318,12 @@ function attachStream(run: RunRow): void {
     run.id,
     (ev) => {
       liveEvents = [...liveEvents, ev];
+      if (ev.kind === "agent_progress") {
+        const data = (ev.data ?? {}) as Record<string, unknown>;
+        const agent = String(data.agent ?? "Agent");
+        const done = data.phase === "done";
+        setLiveActivity(done ? `${agent} 已完成` : `${agent} 开始工作`);
+      }
       const current = runs.find((r) => r.id === run.id);
       if (current) current.events = liveEvents;
       if (viewMode === "chat") {
@@ -1093,6 +1428,8 @@ async function submit(): Promise<void> {
         tasks: main.optTasks.checked,
         memory: main.optMemory.checked,
         mcp: main.optMcp.checked,
+        subagent: main.optSubagent.checked,
+        team: main.optTeam.checked,
       });
       runId = resp.id;
       if (!conversationRoot) conversationRoot = runId;
@@ -1218,7 +1555,7 @@ async function init(): Promise<void> {
   // 视图：URL 参数优先（方便分享/截图），其次本地记忆，默认对话
   const fromQuery = new URLSearchParams(window.location.search).get("view");
   const savedView = recall(VIEW_KEY);
-  viewMode = fromQuery === "trajectory" || fromQuery === "raw"
+  viewMode = fromQuery === "trajectory" || fromQuery === "raw" || fromQuery === "log"
     ? "trajectory"
     : fromQuery === "chat"
       ? "chat"
@@ -1279,6 +1616,7 @@ for (const example of document.querySelectorAll<HTMLButtonElement>(".example")) 
 }
 main.viewChat.addEventListener("click", () => setView("chat"));
 main.viewTrajectory.addEventListener("click", () => setView("trajectory"));
+main.viewTeam.addEventListener("click", () => setView("team"));
 
 // 轨迹视图的"自动追踪最后一行"：跟丢是因为用户自己往上翻了，回到底部再恢复。
 main.chat.addEventListener("scroll", () => {

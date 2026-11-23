@@ -51,6 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="不告诉 agent 该用哪个 Python 解释器（对照实验用）")
     r.add_argument("--compact", action="store_true",
                    help="开启上下文压缩（按预算逐级：落盘、归档、瘦身，最后模型摘要）")
+    r.add_argument("--team", action="store_true",
+                   help="挂上 team 工具：Lead 把任务拆给多个带角色的成员并行执行")
     r.add_argument("--subagent", action="store_true",
                    help="挂上 task 工具，可以派子代理去做独立子任务（上下文隔离）")
     r.add_argument("--subagent-steps", type=int, default=64,
@@ -172,6 +174,15 @@ def cmd_run(args, provider_factory=None) -> int:
             build_tools=lambda: build_registry(files=args.files),
             max_steps=args.subagent_steps,
         ))
+    if args.team:
+        from minicode.team import TeamTool
+
+        extra_tools.append(TeamTool(
+            provider=provider,
+            settings=settings,
+            build_tools=lambda: build_registry(files=args.files),
+            max_steps=32,
+        ))
     task_store = TaskStore(workspace / ".minicode" / "tasks") if args.tasks else None
     memory = MemoryStore(workspace / ".minicode" / "memory.jsonl") if args.memory else None
 
@@ -212,6 +223,8 @@ def cmd_run(args, provider_factory=None) -> int:
                 compact_hint=args.compact,
                 tasks_hint=task_store is not None,
                 memory_hint=memory is not None,
+              subagent_hint=args.subagent,
+              team_hint=args.team,
                 memory_snapshot=(memory.snapshot(args.task) if memory is not None else None),
                 mcp_servers=mcp_servers or None,
             ),

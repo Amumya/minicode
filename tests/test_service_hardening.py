@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from minicode.config import Settings
 from minicode.provider import ModelReply, ToolCall
 from minicode.service import create_app
-from minicode.service.store import RedisStore, RunState
+from minicode.service.store import InMemoryStore, RedisStore, RunState
 
 
 class EchoProvider:
@@ -237,6 +237,89 @@ def test_followup_text_too_long(tmp_path):
     assert resp.status_code == 422
 
 
+
+class ToolCallingProvider:
+    """先调一次工具、再收尾的假 provider；子代理/团队成员复用同一实例。"""
+
+    def __init__(self, tool_name: str) -> None:
+        self.tool_name = tool_name
+        self.calls = 0
+
+    def complete(self, system, messages, tools):
+        last = str(messages[-1].get("content", "")) if messages else ""
+        if "子任务" in last or "成员结论" in last:
+            return ModelReply(text="成员结论", stop_reason="end_turn",
+                              usage={"input_tokens": 1, "output_tokens": 1})
+        self.calls += 1
+        if self.calls == 1:
+            names = {t.get("name") for t in tools if isinstance(t, dict)}
+            assert self.tool_name in names, f"工具没注册: {self.tool_name} / {names}"
+            args = {"prompt": "独立子任务"}
+            if self.tool_name == "team":
+                args = {"task": "团队任务", "members": [
+                    {"name": "a", "role": "甲"}, {"name": "b", "role": "乙"}]}
+            return ModelReply(
+                tool_calls=[ToolCall(id="t1", name=self.tool_name, arguments=args)],
+                stop_reason="tool_use",
+                usage={"input_tokens": 1, "output_tokens": 1},
+            )
+        return ModelReply(text="父结论", stop_reason="end_turn",
+                          usage={"input_tokens": 1, "output_tokens": 1})
+
+
+def test_subagent_tool_registered_for_service(tmp_path):
+    app = create_app(
+        provider_factory=lambda s: ToolCallingProvider("task"),
+        settings=Settings(api_key="fake", model="m", max_steps=6),
+        store=InMemoryStore(),
+        default_workspace=tmp_path,
+    )
+    client = TestClient(app)
+    run_id = client.post("/runs", json={"task": "x", "subagent": True}).json()["id"]
+    _wait(client, run_id, timeout=10)
+    events = client.get(f"/runs/{run_id}?events=true").json()["events"]
+    kinds = [e["kind"] for e in events]
+    assert "unknown_tool" not in kinds
+    assert any(e["kind"] == "tool_call" and e["data"]["tool"] == "task" for e in events)
+
+
+def test_team_tool_registered_for_service(tmp_path):
+    app = create_app(
+        provider_factory=lambda s: ToolCallingProvider("team"),
+        settings=Settings(api_key="fake", model="m", max_steps=6),
+        store=InMemoryStore(),
+        default_workspace=tmp_path,
+    )
+    client = TestClient(app)
+    run_id = client.post("/runs", json={"task": "x", "team": True}).json()["id"]
+    _wait(client, run_id, timeout=10)
+    events = client.get(f"/runs/{run_id}?events=true").json()["events"]
+    kinds = [e["kind"] for e in events]
+    assert "unknown_tool" not in kinds
+    team_events = [e for e in events if e["kind"] == "tool_call" and e["data"]["tool"] == "team"]
+    assert team_events, kinds
+    members = team_events[-1]["data"]["meta"]["team"]["members"]
+    assert {m["name"] for m in members} == {"a", "b"}
+
+
+def test_subagent_team_flags_persist(tmp_path):
+    """桌面端新增的两个开关要原样写进 RunState，resume/followup 也能继承。"""
+    class Instant:
+        def complete(self, system, messages, tools):
+            return ModelReply(text="ok", stop_reason="end_turn",
+                              usage={"input_tokens": 1, "output_tokens": 1})
+
+    app = create_app(
+        provider_factory=lambda s: Instant(),
+        settings=Settings(api_key="fake", model="m", max_steps=2),
+        store=InMemoryStore(),
+        default_workspace=tmp_path,
+    )
+    client = TestClient(app)
+    created = client.post("/runs", json={"task": "x", "subagent": True, "team": True}).json()
+    body = _wait(client, created["id"], timeout=10)
+    assert body["subagent"] is True
+    assert body["team"] is True
 
 def test_running_status_refreshed_in_redis(tmp_path):
     """worker 每步把 updated_at 心跳写回 Redis，列表排序不会停在开始时间。"""
