@@ -4,14 +4,14 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 
-minicode 是一个**学习向的 Coding Agent Harness 实现项目**：从零把工具调用型 Agent 需要的内核、
-上下文、执行治理、多代理、服务端和桌面端各写一遍，并用测试与实验记录确认每个功能到底有没有
-按预期工作。它不是某个 prompt 的演示，也不是声称 production-ready 的框架；重点是把功能实现
-清楚、跑起来、验证住。
+minicode 是一个**从零实现的多功能 Coding Agent**：工具调用内核、五级上下文压缩、执行治理、
+子代理与 Agent Teams、FastAPI/SSE 服务、桌面端和评测体系都在同一个可运行仓库里。项目起源于
+对主流 coding agent 实现的系统复现；落到代码上，目标是让每一项能力都能实际跑任务、有测试、
+有决策记录，而不是停留在 prompt 或演示层。
 
-按“功能学习清单”组织的六块：
+按功能组织的六块：
 
-| 模块 | 实现内容 | 可以学到 / 对应代码 |
+| 模块 | 实现内容 | 对应实现 |
 |---|---|---|
 | Agent 内核 | 单轮循环、provider 抽象、工具注册表、Hook 总线、检查点续跑 | `loop.py` / `provider.py` / `tools/` |
 | 上下文治理 | 五级压缩：落盘、归档、微压缩、截断、模型摘要 + 反应式重试 | `compact.py` |
@@ -22,8 +22,7 @@ minicode 是一个**学习向的 Coding Agent Harness 实现项目**：从零把
 
 当前包含 **428 条 Python 测试、82 条前端测试和 90 项界面链路检查**，CI 三个作业全部通过。
 项目对“权限判定、上下文压缩、多代理、中断恢复”等关键结论都保留了可复现实验记录（`eval/runs/`
-与 `docs/取舍与证据.md`）。主线是学习：每一层都能单独读、单独改、单独验证；如果只想拿走某一块，
-也可以按层拆走复用。
+与 `docs/取舍与证据.md`）。每一层都能单独读、单独改、单独验证，也可以按层拆走复用。
 
 > 仓库：`github.com/Amumya/minicode` · MIT · 本地运行，默认仅监听 `127.0.0.1`
 
@@ -49,9 +48,17 @@ minicode 是一个**学习向的 Coding Agent Harness 实现项目**：从零把
 JSON。工具参数、输出和元数据默认折叠，展开时再渲染；视图支持尾部自动跟随，向上滚动后
 暂停跟随。
 
+### 编队视图
+
+![编队视图](docs/images/ui-team.png)
+
+编队视图把一次 `team` 调用展开成「多 Agent 编队」仪表盘：顶部是 Agent 数、工作项与事件统计，
+左侧 Agent 网络按编队分组（Lead 居中、连接线收拢成员，点击卡片联动右侧），右侧是选中 Agent
+的协作详情与任务板，底部事件检查表记录编队/子代理的时间线。
+
 ## 目录
 
-- [学习路线](#学习路线)
+- [实现地图](#实现地图)
 - [背景与目标](#背景与目标)
 - [功能概览](#功能概览)
 - [架构](#架构)
@@ -63,9 +70,9 @@ JSON。工具参数、输出和元数据默认折叠，展开时再渲染；视�
 - [评测与记录](#评测与记录)
 - [参考](#参考)
 
-## 学习路线
+## 实现地图
 
-项目的组织方式就是一条可以按顺序读的学习路线：
+项目的组织方式就是一条可以从内核读到产品层的实现路径：
 
 - 从 Agent 循环开始 → `src/minicode/loop.py` + `provider.py` + `tools/`；
 - 接着看权限与审计 → `policy.py` + `hooks.py` + `events.py`；
@@ -79,7 +86,7 @@ JSON。工具参数、输出和元数据默认折叠，展开时再渲染；视�
 
 ## 背景与目标
 
-通用 coding agent 已有较多成熟实现。本项目从零实现一个可读、可跑、可验证的 Agent，同时对
+通用 coding agent 已有较多成熟实现。本项目最初是为了系统复现这些实现，后来逐步长成一个完整的多功能 Agent；同时对
 两个容易被弱化的工程问题做可验证实现：
 
 1. **权限判定不能只依赖子串黑名单**。需要解析命令结构、参数语义和嵌套调用；
@@ -305,9 +312,9 @@ PySide6 约 350MB，仅运行命令行时无需安装。
 
 | 部分 | 数量 | 命令 |
 |---|---|---|
-| Python 测试 | 423 条 | `pytest`（无需 API key） |
-| 前端逻辑测试 | 81 条 | `npm --prefix web test` |
-| 界面链路检查 | 77 项 | `node web/uicheck.mjs` |
+| Python 测试 | 428 条 | `pytest`（无需 API key） |
+| 前端逻辑测试 | 82 条 | `npm --prefix web test` |
+| 界面链路检查 | 90 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业：Python 3.11 / 3.12 / 前端 | `.github/workflows/ci.yml` |
 
 运行环境：Python 3.11+，本地开发使用 3.12；Node.js 仅用于前端开发与构建。
@@ -425,7 +432,7 @@ src/minicode/
   service/         FastAPI 服务与存储（内存 + Redis）
 web/               前端（TypeScript + Vite，构建产物提交至 service/web/）
 eval/              沙箱任务集、判定器、对照实验脚本与原始记录
-tests/             403 条 Python 测试与 fixture MCP server
+tests/             428 条 Python 测试与 fixture MCP server
 docs/              决策记录、MCP 配置示例、界面截图
 tools/             开发辅助脚本（store 清理、并发压测）
 ```

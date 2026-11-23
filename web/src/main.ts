@@ -1599,11 +1599,15 @@ async function init(): Promise<void> {
   const savedView = recall(VIEW_KEY);
   viewMode = fromQuery === "trajectory" || fromQuery === "raw" || fromQuery === "log"
     ? "trajectory"
-    : fromQuery === "chat"
-      ? "chat"
-      : savedView === "trajectory"
-        ? "trajectory"
-        : "chat";
+    : fromQuery === "team"
+      ? "team"
+      : fromQuery === "chat"
+        ? "chat"
+        : savedView === "trajectory"
+          ? "trajectory"
+          : savedView === "team"
+            ? "team"
+            : "chat";
 
   try {
     const health = await api.health();
