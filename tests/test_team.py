@@ -101,7 +101,9 @@ def test_team_emits_progress_events(tmp_path: Path):
         tmp_path,
     )
     phases = [(e["agent"], e["phase"]) for e in progress]
-    assert phases == [("a", "start"), ("b", "start"), ("a", "done"), ("b", "done")]
+    # 成员并发执行，完成顺序不固定；只断言“每个成员都有 start/done”。
+    assert len(phases) == 4
+    assert set(phases) == {("a", "start"), ("b", "start"), ("a", "done"), ("b", "done")}
     assert all(e.get("ok") for e in progress if e["phase"] == "done")
 
 
