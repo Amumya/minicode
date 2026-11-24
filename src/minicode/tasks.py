@@ -60,9 +60,6 @@ class Task:
             "status": self.status,
             "owner": self.owner,
             "blockedBy": list(self.blocked_by),
-            # 读回时排序依赖这两个字段；不落盘的话 Windows 上同一毫秒创建会乱序
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
         }
 
 
