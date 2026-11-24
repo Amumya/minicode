@@ -66,6 +66,7 @@ class Task:
 class TaskStore:
     def __init__(self, directory: Path) -> None:
         self.dir = Path(directory)
+        self._last_created = 0.0
 
     # ---------------------------------------------------------------- 存储
 
@@ -178,11 +179,14 @@ class TaskStore:
             for dep in deps:
                 if not self.exists(dep):
                     raise ValueError(f"前置任务不存在: {dep}")
+            created = max(time.time(), self._last_created + 1e-6)
+            self._last_created = created
             task = Task(
                 id=self._new_id(),
                 subject=subject,
                 description=description.strip(),
                 blocked_by=deps,
+                created_at=created,
             )
             # 新任务没有入边，不可能和已有任务成环；create 不做全图 DFS。
             return self.save(task)
