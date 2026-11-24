@@ -782,6 +782,10 @@ details.thoughts {
   font-size: 11px;
 }
 
+.settings-note[hidden] {
+  display: none;
+}
+
 .divider {
   width: 1px;
   height: 16px;
@@ -875,6 +879,90 @@ details.thoughts {
   }
 }
 
+
+/* ---- 窄屏：375 / 768 两档 ---- */
+@media (max-width: 768px) {
+  .topbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 12px;
+  }
+  .topbar-title {
+    flex: 1 1 100%;
+  }
+  .topbar-right {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+  .view-switch {
+    flex: 0 1 auto;
+  }
+  .options {
+    gap: 7px 9px;
+  }
+  .options label {
+    font-size: 11.5px;
+  }
+  .composer {
+    padding: 8px 10px 10px;
+  }
+  .sidebar {
+    max-height: 34vh;
+  }
+  .conversations {
+    max-height: 18vh;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar {
+    padding: 8px 10px;
+  }
+  .topbar-right {
+    gap: 6px;
+  }
+  .view-tab {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  #usage {
+    display: none;
+  }
+  .sidebar {
+    max-height: 30vh;
+  }
+  .options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 10px;
+  }
+  .options select {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .options .divider {
+    display: none;
+  }
+  .options label {
+    white-space: nowrap;
+  }
+  .more-options {
+    grid-column: 1 / -1;
+    flex-basis: auto;
+  }
+  .input-row {
+    grid-template-columns: 1fr;
+  }
+  .input-row button {
+    width: 100%;
+    height: 40px;
+  }
+  .input-row textarea {
+    min-height: 46px;
+  }
+}
 
 /* ---- 任务看板（对话内折叠） ---- */
 .board-body {
