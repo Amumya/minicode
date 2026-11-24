@@ -101,3 +101,6 @@ team_*/
 compact_*/
 compact2_*/
 subagent_*/
+
+# 默认运行工作区（仓库根下的子目录，不参与版本控制）
+workspace/

@@ -368,7 +368,7 @@ def cmd_app(args) -> int:
 def _default_workspace() -> Path:
     """桌面/服务模式的默认工作区：不再用仓库根，避免运行时产物污染源码树。"""
     raw = os.environ.get("MINICODE_WORKSPACE", "").strip()
-    workspace = Path(raw).expanduser() if raw else (Path.home() / "minicode-workspace")
+    workspace = Path(raw).expanduser() if raw else (_repo_root() / "workspace")
     workspace = workspace.resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     return workspace
