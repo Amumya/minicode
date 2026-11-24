@@ -214,6 +214,10 @@ check("每个会话行都有删除按钮", doc.querySelectorAll("#conversations 
 const defaultSwitches = ["#optFiles", "#optPlan", "#optSkills", "#optCompact", "#optTasks", "#optMemory"];
 check("五个开关默认全选", defaultSwitches.every((sel) => doc.querySelector(sel).checked),
   defaultSwitches.map((sel) => `${sel}=${doc.querySelector(sel).checked}`).join(" "));
+check("高级能力收进「更多能力」", !!doc.querySelector("#advancedOptions") &&
+  doc.querySelector("#moreCount")?.textContent === "2",
+  doc.querySelector("#moreCount")?.textContent ?? "no count");
+check("新会话设置可编辑", !doc.querySelector("#model").disabled && !doc.querySelector("#optFiles").disabled);
   check("页面不再提供步数输入框", doc.querySelector("#maxSteps") === null);
 
 // ---------------------------------------------------------------- 视图切换（没有右侧栏）
@@ -238,6 +242,10 @@ await sleep(150);
 check("点会话后加载出对话", doc.querySelectorAll("#chat .turn").length === 1);
 check("历史回答走 Markdown 渲染", doc.querySelector("#chat .answer strong")?.textContent === "12",
   doc.querySelector("#chat .answer")?.textContent ?? "");
+check("已有会话锁定模型与能力开关", doc.querySelector("#model").disabled &&
+  doc.querySelector("#optFiles").disabled && doc.querySelector("#optTeam").disabled);
+check("已有会话提示沿用上一轮设置", !doc.querySelector("#settingsNote").hidden &&
+  (doc.querySelector("#settingsNote")?.textContent ?? "").includes("沿用上一轮"));
   check("子代理不再用下拉框", doc.querySelector("#subagentPanel") === null &&
     doc.querySelector("#subagentList") === null);
 

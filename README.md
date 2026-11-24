@@ -20,7 +20,7 @@ minicode 是一个**从零实现的多功能 Coding Agent**：工具调用内核
 | 产品层 | FastAPI + SSE + Redis/内存双存储 + PySide6/Edge 桌面端 | `service/` / `web/` / `app_shell.py` |
 | 评测与工程 | 隐藏测试评测、A/B 实验、429 条 Python + 83 条前端测试、CI 三作业 | `eval/` / `tests/` / `.github/` |
 
-当前包含 **429 条 Python 测试、83 条前端测试和 90 项界面链路检查**，CI 三个作业全部通过。
+当前包含 **429 条 Python 测试、83 条前端测试和 94 项界面链路检查**，CI 三个作业全部通过。
 项目对“权限判定、上下文压缩、多代理、中断恢复”等关键结论都保留了可复现实验记录（`eval/runs/`
 与 `docs/取舍与证据.md`）。每一层都能单独读、单独改、单独验证，也可以按层拆走复用。
 
@@ -314,7 +314,7 @@ PySide6 约 350MB，仅运行命令行时无需安装。
 |---|---|---|
 | Python 测试 | 429 条 | `pytest`（无需 API key） |
 | 前端逻辑测试 | 83 条 | `npm --prefix web test` |
-| 界面链路检查 | 90 项 | `node web/uicheck.mjs` |
+| 界面链路检查 | 94 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业：Python 3.11 / 3.12 / 前端 | `.github/workflows/ci.yml` |
 
 运行环境：Python 3.11+，本地开发使用 3.12；Node.js 仅用于前端开发与构建。

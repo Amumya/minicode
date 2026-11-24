@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>minicode</title>
     <link rel="icon" href="data:," />
-    <script type="module" crossorigin src="./assets/index-M0xr4Wvt.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-C7rgHolT.css">
+    <script type="module" crossorigin src="./assets/index-n2N0tysD.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-Bf0e5sg2.css">
   </head>
   <body>
     <div class="app" id="appRoot">
@@ -73,7 +73,7 @@
 
         <section class="composer">
           <div class="options" id="options">
-            <select id="model" title="模型">
+            <select id="model" title="模型（仅新会话生效）">
               <option value="">默认模型</option>
               <option value="deepseek-flash">deepseek-flash</option>
               <option value="deepseek-v4-pro">deepseek-v4-pro</option>
@@ -83,11 +83,21 @@
             <label class="check"><input id="optPlan" type="checkbox" checked /> 计划</label>
             <label class="check"><input id="optSkills" type="checkbox" checked /> 技能</label>
             <label class="check"><input id="optCompact" type="checkbox" checked /> 压缩</label>
-            <label class="check"><input id="optTasks" type="checkbox" checked /> 任务图</label>
-            <label class="check"><input id="optMemory" type="checkbox" checked /> 记忆</label>
-            <label class="check"><input id="optMcp" type="checkbox" /> MCP</label>
-            <label class="check"><input id="optSubagent" type="checkbox" /> 子代理</label>
-            <label class="check"><input id="optTeam" type="checkbox" /> 编队工具</label>
+            <details id="advancedOptions" class="more-options">
+              <summary>更多能力 <span id="moreCount" class="count-badge">0</span></summary>
+              <div class="more-options-body">
+                <label class="check"><input id="optTasks" type="checkbox" checked /> 任务图</label>
+                <label class="check"><input id="optMemory" type="checkbox" checked /> 记忆</label>
+                <label class="check"><input id="optMcp" type="checkbox" /> MCP</label>
+                <label class="check"><input id="optSubagent" type="checkbox" /> 子代理</label>
+                <label class="check"><input id="optTeam" type="checkbox" /> 编队工具</label>
+              </div>
+            </details>
+          </div>
+
+          <div id="settingsNote" class="settings-note" hidden>
+            本会话沿用上一轮设置；模型与能力开关只对新会话生效。
+            <button id="newChatFromSettings" class="link" type="button">开新会话修改设置</button>
           </div>
 
           <div class="input-row">

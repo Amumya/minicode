@@ -708,6 +708,80 @@ details.thoughts {
   cursor: pointer;
 }
 
+.options :disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.more-options {
+  flex: 0 1 auto;
+}
+
+.more-options summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  padding: 2px 0;
+}
+
+.more-options summary::-webkit-details-marker {
+  display: none;
+}
+
+.more-options summary::before {
+  content: "▸";
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.more-options[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.more-options[open] {
+  flex-basis: 100%;
+}
+
+.more-options-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 0 2px;
+}
+
+.count-badge {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.settings-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 9px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-note .link {
+  font-size: 11px;
+}
+
 .divider {
   width: 1px;
   height: 16px;

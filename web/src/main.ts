@@ -30,6 +30,8 @@ import {
 import { describeEvent, type AgentEvent } from "./format.ts";
 import { describeToolCall } from "./chat.ts";
 import {
+  canFollowup,
+  canResume,
   formatUsage,
   latestPlan,
   teamViews,
@@ -129,6 +131,10 @@ const main = {
   optMcp: el<HTMLInputElement>("optMcp"),
   optSubagent: el<HTMLInputElement>("optSubagent"),
   optTeam: el<HTMLInputElement>("optTeam"),
+    advanced: el<HTMLDetailsElement>("advancedOptions"),
+    moreCount: el<HTMLElement>("moreCount"),
+    settingsNote: el<HTMLElement>("settingsNote"),
+    newChatFromSettings: el<HTMLButtonElement>("newChatFromSettings"),
   viewChat: el<HTMLButtonElement>("viewChat"),
   viewTrajectory: el<HTMLButtonElement>("viewTrajectory"),
   viewTeam: el<HTMLButtonElement>("viewTeam"),
@@ -1196,13 +1202,30 @@ function setView(mode: ViewMode): void {
   render();
 }
 
+  function renderComposer(): void {
+    const locked = conversationRoot !== "" || runs.length > 0;
+    const controls = [
+      main.model, main.optFiles, main.optPlan, main.optSkills, main.optCompact,
+      main.optTasks, main.optMemory, main.optMcp, main.optSubagent, main.optTeam,
+    ];
+    for (const control of controls) {
+      control.disabled = locked;
+      control.title = locked ? "本会话沿用上一轮设置；修改请开新会话" : "";
+    }
+    const advanced = [main.optTasks, main.optMemory, main.optMcp, main.optSubagent, main.optTeam];
+    main.moreCount.textContent = String(advanced.filter((opt) => opt.checked).length);
+    main.settingsNote.hidden = !locked;
+  }
+
 function renderChrome(): void {
+    const lastRun = runs[runs.length - 1];
+    renderComposer();
   const conv = currentConversation();
   main.title.textContent = conv ? shortTitle(conv.title, 40) : "新会话";
   const busy = isBusy();
   main.submit.disabled = busy;
   main.submit.textContent = busy ? "执行中…" : (runs.length > 0 ? "继续对话" : "发送");
-  main.resume.hidden = !latestRunResumable();
+    main.resume.hidden = !canResume(lastRun);
   main.cancel.hidden = !busy;
   main.status.hidden = !busy;
   if (busy) {
@@ -1250,15 +1273,6 @@ function renderChat(): void {
     stopLiveTimer();
   }
   scrollToBottom();
-}
-
-function latestRunResumable(): boolean {
-  const last = runs[runs.length - 1];
-  if (!last) return false;
-  if (last.status === "error") return true;
-  if (last.status !== "done") return false;
-  const ok = (last.result as Record<string, unknown> | null | undefined)?.ok;
-  return ok === false;
 }
 
 function render(): void {
@@ -1453,7 +1467,7 @@ async function submit(): Promise<void> {
   if (workspace) remember(LAST_WORKSPACE_KEY, workspace);
 
   const lastRun = runs[runs.length - 1];
-  const canFollow = lastRun && canContinue(lastRun);
+    const canFollow = canFollowup(lastRun);
 
   submitting = true;
   main.submit.disabled = true;
@@ -1515,10 +1529,6 @@ async function submit(): Promise<void> {
     submitting = false;
     main.submit.disabled = false;
   }
-}
-
-function canContinue(run: RunRow): boolean {
-  return run.status === "done" || run.status === "error";
 }
 
 async function deleteConversation(conv: Conversation): Promise<void> {
@@ -1636,7 +1646,11 @@ async function init(): Promise<void> {
 }
 
 main.submit.addEventListener("click", () => void submit());
+    main.newChatFromSettings.addEventListener("click", () => newChat());
 main.task.addEventListener("keydown", (e) => {
+    for (const opt of [main.optTasks, main.optMemory, main.optMcp, main.optSubagent, main.optTeam]) {
+      opt.addEventListener("change", () => renderComposer());
+    }
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void submit();
 });
 sidebar.token.addEventListener("change", () => {
