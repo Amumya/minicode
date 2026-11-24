@@ -124,7 +124,7 @@ class TaskStore:
                 out.append(self.load(path.stem))
             except (OSError, ValueError, KeyError):
                 continue
-        return sorted(out, key=lambda t: t.created_at)
+        return sorted(out, key=lambda t: (t.created_at, t.id))
 
     def _locked_method(fn):
         def wrapper(self, *args, **kwargs):
