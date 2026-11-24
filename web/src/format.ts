@@ -93,6 +93,25 @@ export function describeEvent(ev: AgentEvent): Described {
           tone: phase === "done" ? "ok" : "info",
         };
       }
+      case "team_roster": {
+        const members = Array.isArray(d.members) ? d.members.length : 0;
+        return { label: "定义团队", detail: `${members} 名成员`, tone: "info" };
+      }
+      case "team_status": {
+        const status = str(d.status, "?");
+        return {
+          label: "成员状态",
+          detail: `${str(d.member, "?")}：${status}`,
+          tone: status === "suspended" ? "ok" : "info",
+        };
+      }
+      case "team_message": {
+        return {
+          label: "成员回复",
+          detail: `${str(d.member, "?")} · ${num(d.steps)} 步 / ${num(d.tokens)} token`,
+          tone: d.ok === true ? "ok" : "error",
+        };
+      }
       case "todo_reminder":
         return { label: "计划提醒", detail: `连续 ${num(d.since) ?? "?"} 轮未更新 todo，已提醒模型`, tone: "warn" };
     case "thinking": {

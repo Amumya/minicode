@@ -16,11 +16,11 @@ minicode 是一个**从零实现的多功能 Coding Agent**：工具调用内核
 | Agent 内核 | 单轮循环、provider 抽象、工具注册表、Hook 总线、检查点续跑 | `loop.py` / `provider.py` / `tools/` |
 | 上下文治理 | 五级压缩：落盘、归档、微压缩、截断、模型摘要 + 反应式重试 | `compact.py` |
 | 执行治理 | 命令解析、工作区边界、受保护路径、审计事件、取消/超时 | `policy.py` / `hooks.py` / `events.py` |
-| 多代理 | 子代理 `task`、编队 `team`（并行成员、进度事件、超时与失败隔离） | `subagent.py` / `team.py` |
+| 多代理 | 子代理 `task`、常驻 `team`（成员名册、异步邮箱、冷挂起、上下文复用） | `subagent.py` / `team.py` |
 | 产品层 | FastAPI + SSE + Redis/内存双存储 + PySide6/Edge 桌面端 | `service/` / `web/` / `app_shell.py` |
-| 评测与工程 | 隐藏测试评测、A/B 实验、428 条 Python + 82 条前端测试、CI 三作业 | `eval/` / `tests/` / `.github/` |
+| 评测与工程 | 隐藏测试评测、A/B 实验、429 条 Python + 83 条前端测试、CI 三作业 | `eval/` / `tests/` / `.github/` |
 
-当前包含 **428 条 Python 测试、82 条前端测试和 90 项界面链路检查**，CI 三个作业全部通过。
+当前包含 **429 条 Python 测试、83 条前端测试和 90 项界面链路检查**，CI 三个作业全部通过。
 项目对“权限判定、上下文压缩、多代理、中断恢复”等关键结论都保留了可复现实验记录（`eval/runs/`
 与 `docs/取舍与证据.md`）。每一层都能单独读、单独改、单独验证，也可以按层拆走复用。
 
@@ -52,9 +52,9 @@ JSON。工具参数、输出和元数据默认折叠，展开时再渲染；视�
 
 ![编队视图](docs/images/ui-team.png)
 
-编队视图把一次 `team` 调用展开成「多 Agent 编队」仪表盘：顶部是 Agent 数、工作项与事件统计，
-左侧 Agent 网络按编队分组（Lead 居中、连接线收拢成员，点击卡片联动右侧），右侧是选中 Agent
-的协作详情与任务板，底部事件检查表记录编队/子代理的时间线。
+编队视图把常驻团队展开成「多 Agent 编队」仪表盘：顶部是 Agent 数、工作项与事件统计，
+左侧 Agent 网络展示成员与运行状态（working / suspended，点击卡片联动右侧），右侧是选中成员
+的协作详情与任务板，底部事件检查表记录成员状态和回复的时间线。
 
 ## 目录
 
@@ -120,7 +120,7 @@ JSON。工具参数、输出和元数据默认折叠，展开时再渲染；视�
 | 长期记忆 | `remember / recall / forget`，JSONL 存储，按相关度注入 | CLI `--memory`，界面“记忆” |
 | MCP | 外部 stdio server 工具，默认关闭，白名单与运行时二次校验 | CLI `--mcp`，界面“MCP” |
 | 子代理 | 独立上下文执行子任务，仅返回结论 | CLI `--subagent`，界面“子代理” |
-| 编队 | `team` 工具：Lead 把总任务拆给 2–6 个带角色的成员并行执行，结果汇总 | CLI `--team`，界面“编队工具”，顶栏“编队”视图 |
+| 编队 | `team` 工具：常驻成员名册、`send` 异步派发、`wait`/`inbox` 收结果、`list`/`history` 查状态；成员回复后冷挂起 | CLI `--team`，界面“编队工具”，顶栏“编队”视图 |
 | 上下文压缩 | 大输出落盘、旧结果截断、消息整对裁剪，行为确定 | CLI `--compact`，界面“压缩” |
 | 取消 / 续跑 | 取消接口与检查点续跑，检查点在工具结果补齐后写入 | 服务端与界面 |
 
@@ -312,8 +312,8 @@ PySide6 约 350MB，仅运行命令行时无需安装。
 
 | 部分 | 数量 | 命令 |
 |---|---|---|
-| Python 测试 | 428 条 | `pytest`（无需 API key） |
-| 前端逻辑测试 | 82 条 | `npm --prefix web test` |
+| Python 测试 | 429 条 | `pytest`（无需 API key） |
+| 前端逻辑测试 | 83 条 | `npm --prefix web test` |
 | 界面链路检查 | 90 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业：Python 3.11 / 3.12 / 前端 | `.github/workflows/ci.yml` |
 
@@ -432,7 +432,7 @@ src/minicode/
   service/         FastAPI 服务与存储（内存 + Redis）
 web/               前端（TypeScript + Vite，构建产物提交至 service/web/）
 eval/              沙箱任务集、判定器、对照实验脚本与原始记录
-tests/             428 条 Python 测试与 fixture MCP server
+tests/             429 条 Python 测试与 fixture MCP server
 docs/              决策记录、MCP 配置示例、界面截图
 tools/             开发辅助脚本（store 清理、并发压测）
 ```

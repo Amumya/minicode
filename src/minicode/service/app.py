@@ -147,11 +147,20 @@ def create_app(
     reconcile_stale: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="minicode", version=__version__)
+    app.state.loop = None
+
+    @app.middleware("http")
+    async def _capture_loop(request: Request, call_next):
+        app.state.loop = asyncio.get_running_loop()
+        return await call_next(request)
+
     st = store or default_store()
     # --reload 模式下 uvicorn 用 import 字符串重建 app，拿不到参数，
     # 所以默认工作区允许从环境变量来。
     env_workspace = os.environ.get("MINICODE_WORKSPACE", "").strip()
-    base_workspace = Path(default_workspace or env_workspace or Path.cwd()).resolve()
+    base_workspace = Path(
+        default_workspace or env_workspace or (Path.home() / "minicode-workspace")
+    ).resolve()
 
     # ---- 访问令牌 ----
     # 设了 MINICODE_TOKEN（或显式传 token）才启用；空 = 不鉴权（默认，配合只监听 127.0.0.1）。
@@ -194,6 +203,8 @@ def create_app(
           
 # 使用独立字典存储，使 store 仅负责数据，不参与异步控制。
     changed: dict[str, asyncio.Event] = {}
+    # 每个 run 的 SSE 订阅数；归零时回收 changed，避免重连/刷新泄漏 Event。
+    stream_subscribers: dict[str, int] = {}
 
       
 # 本进程内正在执行的 run，用于：
@@ -203,7 +214,7 @@ def create_app(
 #      通过该集合区分“正在执行”与“残留状态”，残留状态允许 resume。
       
 #   2) followup 不得挂到正在执行的 run 上，否则会从半截检查点分叉出并发 run。
-    active_runs: set[str] = set()
+    active_runs: dict[str, str] = {}
 
     # 每个 run 一个取消信号；worker 在每步开始时检查。
     cancel_flags: dict[str, threading.Event] = {}
@@ -248,14 +259,15 @@ def create_app(
         return MemoryStore(Path(state.workspace) / ".minicode" / "memory.jsonl")
 
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
-                resume: dict | None) -> None:
+                resume: dict | None, token: str) -> None:
         mcp_session = None
         mcp_servers: list[str] = []
+        team_tool = None
         # 所有可能抛异常的初始化都放进 try：任一步失败也要走 finally，
         # 否则 run 永远停在 queued/running，active_runs 里留下僵尸 id。
         try:
-            active_runs.add(state.id)
-            cancel_flags[state.id] = threading.Event()
+            active_runs[state.id] = token
+            cancel_flags.setdefault(state.id, threading.Event())
             state.status = "running"
             st.update(state)
             rec = Recorder(on_event=lambda ev: _emit(state, cs, ev, loop_ref))
@@ -296,6 +308,7 @@ def create_app(
                 )
 
             extra_tools = list(mcp_tools)
+            team_tool = None
             if state.subagent:
                 from minicode.subagent import TaskTool
 
@@ -309,13 +322,18 @@ def create_app(
             if state.team:
                 from minicode.team import TeamTool
 
-                extra_tools.append(TeamTool(
+                team_tool = TeamTool(
                     provider=run_provider,
                     settings=run_settings,
                     build_tools=lambda: build_registry(files=state.include_files),
-                    max_steps=32,
-                    on_progress=lambda payload: rec.add("agent_progress", **payload),
-                ))
+                    max_steps=64,
+                    on_event=lambda kind, payload: rec.add(kind, **payload),
+                    should_stop=lambda: (
+                        cancel_flags.get(state.id) is not None
+                        and cancel_flags[state.id].is_set()
+                    ),
+                )
+                extra_tools.append(team_tool)
 
             result = run_loop(
                 state.task,
@@ -362,15 +380,21 @@ def create_app(
                 state.status = "cancelled"
             elif result.stop_reason == "max_steps":
                 state.status = "exhausted"
+            elif not result.ok:
+                # max_tokens / refusal 等：执行结束但没有完整结果，不能复用 done 的成功语义。
+                state.status = "incomplete"
             else:
                 state.status = "done"
         except Exception as exc:  # noqa: BLE001 - 后台线程的异常必须自己接住
             state.error = f"{type(exc).__name__}: {exc}"
             state.status = "error"
         finally:
+            if team_tool is not None:
+                team_tool.shutdown()
             if mcp_session is not None:
                 mcp_session.close()
-            active_runs.discard(state.id)
+            if active_runs.get(state.id) == token:
+                active_runs.pop(state.id, None)
             cancel_flags.pop(state.id, None)
             st.update(state)
             try:
@@ -385,9 +409,12 @@ def create_app(
         loop_ref = asyncio.get_running_loop()
         # 复用已有 Event：resume 时旧的 SSE 连接还在等它，覆盖掉会让旧连接错过唤醒。
         cs = changed.setdefault(state.id, asyncio.Event())
+        cancel_flags.setdefault(state.id, threading.Event())
+        token = f"{time.time_ns()}-{id(state)}"
+        active_runs[state.id] = token
         threading.Thread(
             target=_worker,
-            args=(state, cs, loop_ref, run_settings, resume),
+            args=(state, cs, loop_ref, run_settings, resume, token),
             daemon=True,
             name=f"run-{state.id}",
         ).start()
@@ -739,7 +766,7 @@ def create_app(
                     yield (f"id: {sent - 1}\nevent: {ev['kind']}\n"
                            f"data: {json.dumps(ev, ensure_ascii=False)}\n\n")
                 fresh = st.get(run_id)
-                if fresh is not None and fresh.status in ("done", "error", "cancelled", "exhausted"):
+                if fresh is not None and fresh.status in ("done", "error", "cancelled", "exhausted", "incomplete"):
                     # 先发送已产生的事件：读取事件与查询状态之间可能新增事件，
                     # 若直接发送 end，客户端会缺少最后几条事件（已验证可能丢失 finish/model_call）。
                     while True:

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -92,13 +93,22 @@ def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _locked(fn):
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
 class InMemoryStore:
     def __init__(self, limit: int = 200) -> None:
         self._runs: dict[str, RunState] = {}
         self._events: dict[str, list[dict]] = {}
         self._checkpoints: dict[str, dict] = {}
         self._limit = limit
+        self._lock = threading.RLock()
 
+    @_locked
     def create(self, run: RunState) -> RunState:
         self._runs[run.id] = run
         self._events.setdefault(run.id, [])
@@ -117,18 +127,22 @@ class InMemoryStore:
             self._checkpoints.pop(oldest, None)
         return run
 
+    @_locked
     def get(self, run_id: str) -> RunState | None:
         return self._runs.get(run_id)
 
+    @_locked
     def all(self) -> list[RunState]:
         # dict 保留插入顺序，倒过来就是最新的在前。
         # 不用 created_at 排序：时间戳可能并列。
         return list(reversed(list(self._runs.values())))
 
+    @_locked
     def update(self, run: RunState) -> None:
         run.updated_at = time.time()
         self._runs[run.id] = run
 
+    @_locked
     def append_event(self, run_id: str, event: dict) -> int:
         bucket = self._events.setdefault(run_id, [])
         bucket.append(event)
@@ -138,15 +152,19 @@ class InMemoryStore:
             run.updated_at = time.time()
         return len(bucket) - 1
 
+    @_locked
     def read_events(self, run_id: str, start: int = 0) -> list[dict]:
         return list(self._events.get(run_id, [])[start:])
 
+    @_locked
     def save_checkpoint(self, run_id: str, checkpoint: dict) -> None:
         self._checkpoints[run_id] = checkpoint
 
+    @_locked
     def get_checkpoint(self, run_id: str) -> dict | None:
         return self._checkpoints.get(run_id)
 
+    @_locked
     def delete(self, run_id: str) -> bool:
         existed = self._runs.pop(run_id, None) is not None
         self._events.pop(run_id, None)

@@ -25,9 +25,11 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import time
-from dataclasses import asdict, dataclass, field
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 STATUSES = ("pending", "in_progress", "completed")
@@ -86,9 +88,12 @@ class TaskStore:
     def save(self, task: Task) -> Task:
         self._ensure()
         task.updated_at = time.time()
-        self._path(task.id).write_text(
+        target = self._path(task.id)
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(
             json.dumps(task.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        os.replace(tmp, target)
         return task
 
     def load(self, task_id: str) -> Task:
@@ -96,11 +101,14 @@ class TaskStore:
         if not path.is_file():
             raise FileNotFoundError(f"没有这个任务: {task_id}")
         data = json.loads(path.read_text(encoding="utf-8"))
+        status = str(data.get("status") or "pending")
+        if status not in STATUSES:
+            status = "pending"
         return Task(
             id=data["id"],
             subject=data["subject"],
             description=data.get("description", ""),
-            status=data.get("status", "pending"),
+            status=status,
             owner=data.get("owner"),
             blocked_by=list(data.get("blockedBy") or data.get("blocked_by") or []),
             created_at=data.get("created_at", time.time()),
@@ -118,6 +126,45 @@ class TaskStore:
                 continue
         return sorted(out, key=lambda t: t.created_at)
 
+    def _locked_method(fn):
+        def wrapper(self, *args, **kwargs):
+            with self._locked():
+                return fn(self, *args, **kwargs)
+        return wrapper
+
+    @contextmanager
+    def _locked(self):
+        """跨进程互斥：claim/complete/update/create 的读-改-写必须串行。"""
+        self._ensure()
+        lock = self.dir / ".tasks.lock"
+        deadline = time.time() + 10
+        fd = None
+        while True:
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                if time.time() > deadline:
+                    try:
+                        if time.time() - lock.stat().st_mtime > 30:
+                            lock.unlink()
+                            continue
+                    except OSError:
+                        pass
+                    raise RuntimeError("任务目录锁超时（可能有其他进程在写）")
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+
     # ---------------------------------------------------------------- 操作
 
     def create(self, subject: str, description: str = "",
@@ -127,23 +174,18 @@ class TaskStore:
             raise ValueError("任务标题不能为空")
 
         deps = list(blocked_by or [])
-        for dep in deps:
-            if not self.exists(dep):
-                raise ValueError(f"前置任务不存在: {dep}")
-
-        task = Task(
-            id=self._new_id(),
-            subject=subject,
-            description=description.strip(),
-            blocked_by=deps,
-        )
-        # 新任务不能和已有任务成环（新任务没有后继，所以只要它不间接依赖自己）
-        self._check_no_cycle(task, self.list())
-        self._ensure()
-        self._path(task.id).write_text(
-            json.dumps(task.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return task
+        with self._locked():
+            for dep in deps:
+                if not self.exists(dep):
+                    raise ValueError(f"前置任务不存在: {dep}")
+            task = Task(
+                id=self._new_id(),
+                subject=subject,
+                description=description.strip(),
+                blocked_by=deps,
+            )
+            # 新任务没有入边，不可能和已有任务成环；create 不做全图 DFS。
+            return self.save(task)
 
     def _new_id(self) -> str:
         for _ in range(50):
@@ -174,34 +216,38 @@ class TaskStore:
         return False
 
     def _check_no_cycle(self, candidate: Task, existing: list[Task]) -> None:
-        """在"已有图 + 新任务"上查环。新任务只有出边（依赖别人），
-        所以出现环只可能是它间接依赖到一条同时依赖它的路径 —— 但新任务还没有入边，
-        因此这里的环只可能来自已有图本身。仍然检查一遍，防止脏数据。"""
+        """迭代 DFS 查环；不递归，避免超深依赖链 RecursionError。"""
         graph: dict[str, list[str]] = {t.id: list(t.blocked_by) for t in existing}
         graph[candidate.id] = list(candidate.blocked_by)
+        color: dict[str, int] = {}
 
-        state: dict[str, int] = {}
+        for start_node in graph:
+            if color.get(start_node):
+                continue
+            color[start_node] = 1
+            path = [start_node]
+            stack: list[tuple[str, list[str], int]] = [
+                (start_node, graph.get(start_node, []), 0)
+            ]
+            while stack:
+                node, deps, index = stack[-1]
+                if index >= len(deps):
+                    color[node] = 2
+                    stack.pop()
+                    if path:
+                        path.pop()
+                    continue
+                dep = deps[index]
+                stack[-1] = (node, deps, index + 1)
+                if color.get(dep) == 1:
+                    cycle_start = path.index(dep) if dep in path else 0
+                    raise ValueError(f"任务依赖成环: {' → '.join(path[cycle_start:] + [dep])}")
+                if not color.get(dep):
+                    color[dep] = 1
+                    path.append(dep)
+                    stack.append((dep, graph.get(dep, []), 0))
 
-        def visit(node: str, stack: list[str]) -> list[str] | None:
-            if state.get(node) == 1:
-                if node in stack:
-                    return stack[stack.index(node):] + [node]
-                return [node]
-            if state.get(node) == 2:
-                return None
-            state[node] = 1
-            for dep in graph.get(node, []):
-                found = visit(dep, stack + [node])
-                if found:
-                    return found
-            state[node] = 2
-            return None
-
-        for node in graph:
-            found = visit(node, [])
-            if found:
-                raise ValueError(f"任务依赖成环: {' → '.join(found)}")
-
+    @_locked_method
     def update_dependencies(self, task_id: str, add: list[str]) -> Task:
         task = self.load(task_id)
         existing = [t for t in self.list() if t.id != task_id]
@@ -212,8 +258,9 @@ class TaskStore:
             if not self.exists(dep):
                 raise ValueError(f"前置任务不存在: {dep}")
 
-        merged = task
-        merged.blocked_by = list(dict.fromkeys(task.blocked_by + list(add)))
+        if task.status != "pending":
+            raise ValueError(f"任务当前是 {task.status}，只有 pending 能改前置")
+        merged = replace(task, blocked_by=list(dict.fromkeys(task.blocked_by + list(add))))
         self._check_no_cycle(merged, existing)
         return self.save(merged)
 
@@ -231,6 +278,7 @@ class TaskStore:
     def can_start(self, task: Task) -> bool:
         return not self.incomplete_dependencies(task)
 
+    @_locked_method
     def claim(self, task_id: str, owner: str = "agent") -> Task:
         task = self.load(task_id)
         if task.status != "pending":
@@ -248,6 +296,7 @@ class TaskStore:
             if t.status == "pending" and self.can_start(t)
         }
 
+    @_locked_method
     def complete(self, task_id: str, owner: str | None = None) -> tuple[Task, list[str]]:
         """完成一个任务，返回 (任务, 因为这一步而被解锁的任务 ID 列表)。"""
         ready_before = self._ready_ids()
@@ -273,7 +322,7 @@ class TaskStore:
             return "（还没有任务）"
         lines = []
         for t in tasks:
-            mark = {"pending": " ", "in_progress": "~", "completed": "x"}[t.status]
+            mark = {"pending": " ", "in_progress": "~", "completed": "x"}.get(t.status, "?")
             line = f"[{mark}] {t.id}  {t.subject}"
             if t.owner:
                 line += f"  (owner: {t.owner})"

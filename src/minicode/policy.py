@@ -73,7 +73,7 @@ SYSTEM_PATHS = (
 
 # 删除类命令：POSIX 的、PowerShell 的、cmd 内建的都要认
 DELETE_CMDS = {
-    "rm", "del", "rd", "rmdir", "erase",
+    "rm", "del", "rd", "rmdir", "erase", "unlink",
     "remove-item", "ri", "clear-content", "clc",
 }
 
@@ -81,6 +81,8 @@ DELETE_CMDS = {
 WRITE_CMDS = {
     "set-content", "add-content", "out-file", "new-item",
     "copy-item", "move-item", "rename-item", "copy", "move", "tee",
+    # POSIX / Git-Bash 常用写命令：漏掉它们等于在 WSL/Git-Bash 下没有边界
+    "cp", "mv", "touch", "ln", "install", "truncate", "sed", "mkdir",
 }
 
 # 这些参数后面跟的是"值"，不是路径 —— 判越界时要跳过它的取值。
@@ -202,8 +204,9 @@ def split_segments(command: str) -> list[list[Segment]]:
 
 def _has_short_flag(args: tuple[str, ...], letter: str) -> bool:
     """判断是否出现 -r / -f 这类短参数，支持 -rf 合写。"""
+    want = letter.lower()
     for a in args:
-        if a.startswith("-") and not a.startswith("--") and letter in a[1:]:
+        if a.startswith("-") and not a.startswith("--") and want in a[1:].lower():
             return True
     return False
 
@@ -479,12 +482,18 @@ def _check_segment(seg: Segment, workspace: Path, depth: int = 0) -> Verdict:
         targets = [t for t in _path_targets(args)
                    if not (is_find_delete and t in (".", "./"))]
         for t in targets:
+            protected = _protected_target_verdict(t, workspace)
+            if protected is not None:
+                return protected
             if _is_dangerous_target(t):
                 return Verdict(False, DENIED_DANGEROUS_TARGET, f"删除 {t}")
             if _is_system_path(t):
                 return Verdict(False, DENIED_SYSTEM_PATH_WRITE, f"删除系统目录 {t}")
             if recursive and _outside_workspace(t, workspace):
                 return Verdict(False, DENIED_OUTSIDE_WORKSPACE, f"递归删除工作区外的 {t}")
+        redirect = _check_redirects(seg.tokens, workspace)
+        if redirect is not None:
+            return redirect
         return Verdict(True, ALLOWED)
 
     if prog in ("chmod", "chown", "takeown", "icacls"):
@@ -496,28 +505,35 @@ def _check_segment(seg: Segment, workspace: Path, depth: int = 0) -> Verdict:
                 return Verdict(False, DENIED_OUTSIDE_WORKSPACE, f"{prog} -R {t}")
         return Verdict(True, ALLOWED)
 
-    # 写入类命令：和文件工具保持同一条工作区边界
+    # 写入类命令：和文件工具保持同一条工作区边界。
+    # sed 只有 -i/--in-place 才是写；cp/mv/ln/install 不能跳过目标，
+    # 否则 cp a.txt /etc/hosts 的目标会被漏掉。
     if prog in WRITE_CMDS:
-        for t in _path_targets(args, skip_value_flags=True):
-            if _is_system_path(t):
-                return Verdict(False, DENIED_SYSTEM_PATH_WRITE, f"{prog} 写系统目录 {t}")
-            if _outside_workspace(t, workspace):
-                return Verdict(False, DENIED_OUTSIDE_WORKSPACE, f"{prog} 写工作区外 {t}")
+        plain_read_sed = prog == "sed" and not (
+            _has_short_flag(args, "i") or "--in-place" in args
+        )
+        if not plain_read_sed:
+            skip_values = prog not in {"cp", "mv", "ln", "install", "touch", "mkdir", "truncate"}
+            for t in _path_targets(args, skip_value_flags=skip_values):
+                protected = _protected_target_verdict(t, workspace)
+                if protected is not None:
+                    return protected
+                if _is_system_path(t):
+                    return Verdict(False, DENIED_SYSTEM_PATH_WRITE, f"{prog} 写系统目录 {t}")
+                if _outside_workspace(t, workspace):
+                    return Verdict(False, DENIED_OUTSIDE_WORKSPACE, f"{prog} 写工作区外 {t}")
+        redirect = _check_redirects(seg.tokens, workspace)
+        if redirect is not None:
+            return redirect
         return Verdict(True, ALLOWED)
 
     if prog == "git":
         return _check_git(args)
 
     # 重定向写系统目录（也顺带盯住工作区外）
-    for i, tok in enumerate(seg.tokens):
-        if tok in (">", ">>"):
-            if i + 1 < len(seg.tokens):
-                target = seg.tokens[i + 1]
-                if _is_system_path(target):
-                    return Verdict(False, DENIED_SYSTEM_PATH_WRITE, f"写入 {target}")
-                if _outside_workspace(target, workspace):
-                    return Verdict(False, DENIED_OUTSIDE_WORKSPACE,
-                                   f"重定向到工作区外 {target}")
+    redirect = _check_redirects(seg.tokens, workspace)
+    if redirect is not None:
+        return redirect
 
     return Verdict(True, ALLOWED)
 
@@ -541,6 +557,57 @@ class SubstringBlacklistJudge:
 def _is_protected_path(path: str) -> bool:
     name = os.path.basename(str(path).replace("\\", "/")).lower()
     return any(fnmatch(name, pat) for pat in PROTECTED_NAME_PATTERNS)
+
+
+def _is_sensitive_path(target: str, workspace: Path) -> bool:
+    """仓库内敏感路径：.git / .minicode / tests / .env*。"""
+    name = os.path.basename(_strip_quotes(str(target)).replace("\\", "/")).lower()
+    if name == ".env" or name.startswith(".env."):
+        return True
+    try:
+        p = Path(_strip_quotes(str(target)))
+        resolved = (p if p.is_absolute() else workspace / p).resolve()
+        rel = resolved.relative_to(workspace.resolve())
+    except (ValueError, OSError):
+        return False
+    parts = [part.lower() for part in rel.parts]
+    return bool(parts) and parts[0] in {".git", ".minicode", "tests"}
+
+
+def _protected_target_verdict(target: str, workspace: Path) -> Verdict | None:
+    if _is_protected_path(target) or _is_sensitive_path(target, workspace):
+        return Verdict(False, DENIED_PROTECTED_FILE, f"受保护文件/目录: {target}")
+    return None
+
+
+def _iter_redirect_targets(tokens: tuple[str, ...]):
+    for index, token in enumerate(tokens):
+        if token in (">", ">>"):
+            if index + 1 < len(tokens):
+                yield tokens[index + 1]
+        elif token.startswith(">>") and len(token) > 2:
+            yield token[2:]
+        elif token.startswith(">") and len(token) > 1:
+            yield token[1:]
+        elif ">" in token:
+            # echo x>/etc/evil、2>/etc/x 这类没有空格的重定向
+            rest = token.split(">", 1)[1]
+            if rest.startswith(">"):
+                rest = rest[1:]
+            if rest and not rest.startswith("&"):
+                yield rest
+
+
+def _check_redirects(tokens: tuple[str, ...], workspace: Path) -> Verdict | None:
+    for target in _iter_redirect_targets(tokens):
+        protected = _protected_target_verdict(target, workspace)
+        if protected is not None:
+            return protected
+        if _is_system_path(target):
+            return Verdict(False, DENIED_SYSTEM_PATH_WRITE, f"写入 {target}")
+        if _outside_workspace(target, workspace):
+            return Verdict(False, DENIED_OUTSIDE_WORKSPACE, f"重定向到工作区外 {target}")
+    return None
 
 
 def judge_tool_call(

@@ -411,9 +411,18 @@ def run(
                 step=step,
                 result=tool_result,
             )
-            bus.run(POST_TOOL, post_ctx)
+            post_decision = bus.run(POST_TOOL, post_ctx)
             for err in bus.drain_errors():
                 rec.add("hook_error", step=step, **err)
+            if post_decision.action == "deny":
+                # POST_TOOL 的承诺是“执行后可否决”：在结果进模型前改写为拒绝。
+                tool_result = ToolResult(
+                    f"[post-hook denied: {post_decision.reason}] {post_decision.detail}",
+                    exit_code=1,
+                    meta={"post_hook_denied": post_decision.by or post_decision.reason},
+                )
+                rec.add("hook_denied", step=step, tool=tc.name,
+                        hook=post_decision.by, reason=post_decision.reason)
 
             results.append(
                 {

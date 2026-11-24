@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import time
@@ -140,6 +141,14 @@ class Compactor:
         self.transcript_dir = self.workspace / ".minicode" / "transcripts"
 
     # ------------------------------------------------------------ 结构判定
+
+    @staticmethod
+    def _summary_tail_start(messages: list[dict]) -> int:
+        """L4 只压最后一条 assistant 之前的已读前缀；尾部未读结果必须保留。"""
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "assistant":
+                return index
+        return 0
 
     @staticmethod
     def estimate_chars(messages: list[dict]) -> int:
@@ -505,17 +514,32 @@ class Compactor:
         stats: CompactStats | None = None,
     ) -> tuple[list[dict], CompactStats]:
         stats = stats or CompactStats(chars_before=self.estimate_chars(messages))
-        transcript = self.write_transcript(messages)
-        summary = self.summarize_history(messages)
-        if not summary:
-            stats.notes.append("无可用摘要（未注入摘要器或调用失败），本次只降级为瘦身")
-            stats.chars_after = stats.chars_before
+        # L4 只压最后一条 assistant 之前的已读前缀；尾部未读结果必须保留，
+        # 否则模型下一步看不到刚拿到的工具结果。没有未读结果时退回整段摘要。
+        unseen = self._unseen_positions(messages)
+        tail_start = self._summary_tail_start(messages) if unseen else len(messages)
+        if tail_start <= 0:
+            stats.notes.append("没有可压缩的已读前缀，保留原文")
+            stats.chars_after = self.estimate_chars(messages)
+            stats.fits = stats.chars_after <= self.cfg.context_char_limit
             return messages, stats
+        prefix = messages[:tail_start]
+        summary = self.summarize_history(prefix)
+        if not summary:
+            stats.notes.append("摘要不可用（未注入摘要器或调用失败），保留 L1–L3 瘦身结果，本次不摘要")
+            stats.error = "summary_unavailable"
+            stats.chars_after = self.estimate_chars(messages)
+            stats.fits = stats.chars_after <= self.cfg.context_char_limit
+            return messages, stats
+        transcript = self.write_transcript(messages)
         stats.summarized = True
         stats.level = "summary"
         stats.notes.append(f"模型摘要，完整记录 {transcript.name}")
-        output = [self.summary_message("已压缩", active_request, summary, transcript)]
+        output = [self.summary_message("已压缩", active_request, summary, transcript), *messages[tail_start:]]
         stats.chars_after = self.estimate_chars(output)
+        stats.fits = stats.chars_after <= self.cfg.context_char_limit
+        if not stats.fits:
+            stats.notes.append("摘要后仍超预算，下一层仍需压缩")
         return output, stats
 
     # ------------------------------------------------------------ L5 反应式

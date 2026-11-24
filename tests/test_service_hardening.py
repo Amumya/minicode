@@ -256,8 +256,7 @@ class ToolCallingProvider:
             assert self.tool_name in names, f"工具没注册: {self.tool_name} / {names}"
             args = {"prompt": "独立子任务"}
             if self.tool_name == "team":
-                args = {"task": "团队任务", "members": [
-                    {"name": "a", "role": "甲"}, {"name": "b", "role": "乙"}]}
+                args = {"action": "list"}
             return ModelReply(
                 tool_calls=[ToolCall(id="t1", name=self.tool_name, arguments=args)],
                 stop_reason="tool_use",
@@ -298,8 +297,7 @@ def test_team_tool_registered_for_service(tmp_path):
     assert "unknown_tool" not in kinds
     team_events = [e for e in events if e["kind"] == "tool_call" and e["data"]["tool"] == "team"]
     assert team_events, kinds
-    members = team_events[-1]["data"]["meta"]["team"]["members"]
-    assert {m["name"] for m in members} == {"a", "b"}
+    assert "还没有定义成员" in str(team_events[-1]["data"].get("output", ""))
 
 
 def test_subagent_team_flags_persist(tmp_path):

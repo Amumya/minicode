@@ -183,7 +183,9 @@ def test_summary_compacts_history(tmp_path):
     out, stats = comp.prepare(msgs, "任务")
     assert stats.summarized
     assert stats.level == "summary"
-    assert len(out) == 1
+    assert len(out) == 3
+    assert out[-1]["content"][0]["type"] == "tool_result"
+    assert len(out[-1]["content"][0]["content"]) == 40_000
     assert "这是压缩后的摘要" in str(out[0]["content"])
 
 

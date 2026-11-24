@@ -233,6 +233,7 @@ export interface TeamMemberView {
   name: string;
   role: string;
   ok: boolean;
+  status: "working" | "suspended" | "failed";
   steps: number;
   tokens: number;
   output: string;
@@ -246,14 +247,87 @@ export interface TeamView {
   members: TeamMemberView[];
 }
 
-/** 从 run 的 tool_call 事件里还原 `team` 工具的编队记录（meta.team 由后端写入）。 */
+/**
+ * 还原团队视图：
+ * - 新运行时：team_roster / team_status / team_message 事件（常驻成员、异步邮箱）；
+ * - 旧数据：team 工具的 tool_call meta（一次性并行成员），保持兼容。
+ */
 export function teamViews(runs: Array<{ id: string; events?: AgentEvent[] }>): TeamView[] {
   const out: TeamView[] = [];
   for (const run of runs) {
+    let current: TeamView | null = null;
+    let hasRoster = false;
+    const byName = new Map<string, TeamMemberView>();
+
+    const ensureTeam = (step: number): TeamView => {
+      if (current === null) {
+        current = { runId: run.id, task: "Agent Teams", step, members: [] };
+        out.push(current);
+      }
+      return current;
+    };
+    const ensureMember = (name: string, role: string): TeamMemberView => {
+      let member = byName.get(name);
+      if (!member) {
+        member = {
+          name,
+          role,
+          ok: true,
+          status: "suspended",
+          steps: 0,
+          tokens: 0,
+          output: "",
+          error: "",
+        };
+        byName.set(name, member);
+        ensureTeam(0).members.push(member);
+      } else if (role) {
+        member.role = role;
+      }
+      return member;
+    };
+
     for (const ev of run.events ?? []) {
-      if (ev.kind !== "tool_call") continue;
       const data = rec(ev.data);
-      if (data.tool !== "team") continue;
+      if (ev.kind === "team_roster") {
+        hasRoster = true;
+        const raw = Array.isArray(data.members) ? data.members : [];
+        current = { runId: run.id, task: "Agent Teams", step: num(data.step), members: [] };
+        out.push(current);
+        byName.clear();
+        for (const item of raw) {
+          const member = rec(item);
+          ensureMember(String(member.name ?? "?"), String(member.role ?? ""));
+        }
+        continue;
+      }
+      if (ev.kind === "team_status") {
+        const member = ensureMember(
+          String(data.member ?? "?"),
+          String(data.role ?? ""),
+        );
+        const status = String(data.status ?? "");
+        if (status === "working") member.status = "working";
+        else if (status === "failed") member.status = "failed";
+        else member.status = "suspended";
+        continue;
+      }
+      if (ev.kind === "team_message") {
+        const member = ensureMember(
+          String(data.member ?? "?"),
+          String(data.role ?? ""),
+        );
+        member.ok = data.ok === true;
+        member.status = member.ok ? "suspended" : "failed";
+        member.steps = num(data.steps);
+        member.tokens = num(data.tokens);
+        member.output = String(data.text ?? data.output ?? "");
+        member.error = String(data.error ?? "");
+        continue;
+      }
+      // 旧数据兼容：team 工具的一次性成员；同一 run 若已有新 roster，
+      // 旧 tool_call meta 只是冗余副本（define 的结果），跳过避免渲染出第二个编队。
+      if (ev.kind !== "tool_call" || data.tool !== "team" || hasRoster) continue;
       const team = rec(rec(data.meta).team);
       const raw = team.members;
       if (!Array.isArray(raw)) continue;
@@ -263,10 +337,12 @@ export function teamViews(runs: Array<{ id: string; events?: AgentEvent[] }>): T
         step: num(data.step),
         members: raw.map((m) => {
           const item = rec(m);
+          const ok = item.ok === true;
           return {
             name: String(item.name ?? "?"),
             role: String(item.role ?? ""),
-            ok: item.ok === true,
+            ok,
+            status: ok ? "suspended" as const : "failed" as const,
             steps: num(item.steps),
             tokens: num(item.tokens),
             output: String(item.output ?? ""),

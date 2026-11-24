@@ -100,7 +100,10 @@ class WriteFileTool(_SafeRun):
 
     def _run(self, args: dict, cwd: Path) -> ToolResult:
         rel = (args or {}).get("path", "")
-        content = (args or {}).get("content", "")
+        raw = (args or {}).get("content")
+        if raw is None:
+            return _err("缺少 content 参数（要清空文件请显式传 content=\"\"）")
+        content = str(raw)
         if not rel:
             return _err("缺少 path 参数")
         try:
@@ -133,7 +136,10 @@ class EditFileTool(_SafeRun):
     def _run(self, args: dict, cwd: Path) -> ToolResult:
         rel = (args or {}).get("path", "")
         old = (args or {}).get("old_text", "")
-        new = (args or {}).get("new_text", "")
+        raw_new = (args or {}).get("new_text")
+        if raw_new is None:
+            return _err("缺少 new_text 参数（要删除该段请显式传 new_text=\"\"）")
+        new = str(raw_new)
         if not rel or not old:
             return _err("缺少 path 或 old_text 参数")
         try:

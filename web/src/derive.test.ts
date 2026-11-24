@@ -202,3 +202,22 @@ test("subagentRecords 提取 task 调用并按会话隔离", () => {
   assert.equal(records[0].steps, 2);
   assert.equal(records[0].ok, true);
 });
+
+test("teamViews 支持常驻成员事件（roster/status/message）", () => {
+  const teams = teamViews([
+    { id: "r-async", events: [
+      { kind: "team_roster", data: { step: 2, members: [
+        { name: "alice", role: "安全" }, { name: "bob", role: "性能" } ] } },
+      { kind: "team_status", data: { member: "alice", role: "安全", status: "working" } },
+      { kind: "team_status", data: { member: "alice", role: "安全", status: "suspended" } },
+      { kind: "team_message", data: { member: "alice", role: "安全", ok: true,
+        steps: 3, tokens: 20, text: "没有高危问题", error: "" } },
+    ] },
+  ]);
+  assert.equal(teams.length, 1);
+  assert.equal(teams[0].members.length, 2);
+  assert.equal(teams[0].members[0].name, "alice");
+  assert.equal(teams[0].members[0].ok, true);
+  assert.equal(teams[0].members[0].output, "没有高危问题");
+  assert.equal(teams[0].members[1].name, "bob");
+});

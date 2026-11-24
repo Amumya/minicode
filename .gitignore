@@ -81,3 +81,23 @@ scripts/thinking_*.py
 
 # 测试/调试临时目录
 .tmp/
+
+# 一次性探针/实验垃圾（评审后清掉，防再次入库）
+_*.py
+_runtests*
+_slice*.txt
+weather_*
+polws_*/
+scratch/
+mcpenc_*/
+*_probe_*.mjs
+_*.log
+verify_run.log
+.coverage
+# 运行时临时目录（测试/探针在仓库根生成，默认工作区已迁到用户目录）
+tasks_[a-z0-9]*/
+tasksD_*/
+team_*/
+compact_*/
+compact2_*/
+subagent_*/

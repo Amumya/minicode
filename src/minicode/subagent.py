@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -66,6 +66,7 @@ def run_subagent(
     max_steps: int = 64,
     system: str = "",
     on_progress: Callable[[dict], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> SubagentReport:
     """跑一个独立的子任务。返回结论 + 花费，不返回中间过程。"""
     if on_progress:

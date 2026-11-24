@@ -209,9 +209,11 @@ class McpClient:
     def start(self) -> None:
         if self.proc is not None:
             return
-        env = None
-        if self.config.env:
-            env = {**os.environ, **self.config.env}
+        # 子进程是独立 Python：Windows 管道默认 gbk，显式注入 UTF-8
+        env = {**os.environ, **(self.config.env or {})}
+        if os.name == "nt":
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+            env.setdefault("PYTHONUTF8", "1")
         cwd = self.config.cwd or (str(self.cwd) if self.cwd else None)
         popen_kwargs: dict = {
             "stdin": subprocess.PIPE,

@@ -565,7 +565,7 @@ function buildTrajectoryRun(run: RunRow, index: number): { section: HTMLElement;
   const usage = summarizeUsage(events);
   const result = (run.result ?? {}) as Record<string, unknown>;
   const runStatus = run.status ?? "queued";
-  const status = runStatus === "done" && result.ok === false ? "未完成" : runStatus;
+  const status = (runStatus === "done" && result.ok === false) || runStatus === "incomplete" ? "未完成" : runStatus;
 
   const section = h("section", { class: "traj-run" });
   const head = h("div", { class: "traj-run-head" });
@@ -674,8 +674,14 @@ function buildAgentCards(teams: ReturnType<typeof teamViews>, subs: SubagentReco
         name: member.name,
         role: member.role || "成员",
         task: team.task || "编队任务",
-        status: member.ok ? "完成" : "失败",
-        ok: member.ok,
+        status: member.status === "working"
+          ? "运行中"
+          : member.status === "failed"
+            ? (member.output ? "未完成" : "失败")
+            : member.output
+              ? "完成"
+              : "挂起",
+        ok: member.status !== "failed",
         steps: member.steps,
         tokens: member.tokens,
         toolCalls: 0,

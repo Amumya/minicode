@@ -52,11 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--compact", action="store_true",
                    help="开启上下文压缩（按预算逐级：落盘、归档、瘦身，最后模型摘要）")
     r.add_argument("--team", action="store_true",
-                   help="挂上 team 工具：Lead 把任务拆给多个带角色的成员并行执行")
+                   help="挂上 team 工具：常驻成员名册 + 异步邮箱（send/wait/inbox，闲时冷挂起）")
     r.add_argument("--subagent", action="store_true",
                    help="挂上 task 工具，可以派子代理去做独立子任务（上下文隔离）")
     r.add_argument("--subagent-steps", type=int, default=64,
-                   help="子代理的步数上限，默认 6")
+                   help="子代理的步数上限，默认 64")
     r.add_argument("--tasks", action="store_true",
                    help="挂上任务图工具（建/改/列/查/认领/完成），带依赖和环检测")
     r.add_argument("--memory", action="store_true",
@@ -184,7 +184,7 @@ def cmd_run(args, provider_factory=None) -> int:
             provider=provider,
             settings=settings,
             build_tools=lambda: build_registry(files=args.files),
-            max_steps=32,
+            max_steps=64,
         ))
     task_store = TaskStore(workspace / ".minicode" / "tasks") if args.tasks else None
     memory = MemoryStore(workspace / ".minicode" / "memory.jsonl") if args.memory else None
@@ -343,18 +343,19 @@ def cmd_app(args) -> int:
         redis_proc, _ = _ensure_persistent_store(_repo_root(), args.no_redis)
 
     try:
+        workspace = Path(args.workspace or _default_workspace()).resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
         server_cmd = [
             sys.executable, "-m", "minicode", "serve",
             "--host", args.host, "--port", str(args.port), "--memory-log",
+            "--workspace", str(workspace),
         ]
-        if args.workspace:
-            server_cmd += ["--workspace", str(args.workspace)]
         return run_app(
             None,
             server_cmd=server_cmd,
             host=args.host,
             port=args.port,
-            workspace=args.workspace,
+            workspace=workspace,
             browser=args.browser,
             mode=args.mode,
             dry_run=args.dry_run,
@@ -362,6 +363,15 @@ def cmd_app(args) -> int:
         )
     finally:
         dev.stop(redis_proc)
+
+
+def _default_workspace() -> Path:
+    """桌面/服务模式的默认工作区：不再用仓库根，避免运行时产物污染源码树。"""
+    raw = os.environ.get("MINICODE_WORKSPACE", "").strip()
+    workspace = Path(raw).expanduser() if raw else (Path.home() / "minicode-workspace")
+    workspace = workspace.resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace
 
 
 def _repo_root() -> Path:
