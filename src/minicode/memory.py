@@ -26,6 +26,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 # 单条记忆的长度上限：再长就不适合塞进提示词了
 MAX_ENTRY_CHARS = 400
@@ -33,6 +34,10 @@ MAX_ENTRY_CHARS = 400
 DEFAULT_SNAPSHOT_CHARS = 1200
 # 单条记忆的条数上限（超了丢最早的）
 DEFAULT_LIMIT = 200
+
+# 第二层近似判重：字符二元组 Jaccard 阈值
+DUPLICATE_JACCARD = 0.9
+JUDGE_JACCARD = 0.7
 
 _ASCII_TOKEN = re.compile(r"[a-z0-9_]{2,}")
 _CJK_CHUNK = re.compile(r"[\u4e00-\u9fff]+")
@@ -62,6 +67,75 @@ def _make_id(text: str) -> str:
     return hashlib.sha1(_normalize(text).lower().encode("utf-8")).hexdigest()[:8]
 
 
+def shingles(text: str) -> set[str]:
+    """字符二元组集合；中文/英文都能用，避免英文单词级分词把短句判得过远。"""
+    normalized = _normalize(text).lower()
+    if len(normalized) <= 1:
+        return {normalized} if normalized else set()
+    return {normalized[i : i + 2] for i in range(len(normalized) - 1)}
+
+
+def jaccard(a: str, b: str) -> float:
+    left, right = shingles(a), shingles(b)
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+class MemoryJudge(Protocol):
+    """第三层判重的模型接口。只允许 same / different / merge 三种结论。"""
+
+    def decide(self, new_text: str, existing_text: str) -> str: ...
+    def merge(self, new_text: str, existing_text: str) -> str: ...
+
+
+_DECIDE_SYSTEM = """你是长期记忆去重器。比较两条记忆是否表达同一个事实。
+只输出一个词：same / different / merge。
+- same：同一个事实，只是措辞不同
+- different：两个事实
+- merge：同一个事实但有互补细节，应合并成一条
+不要解释，不要标点。"""
+
+_MERGE_SYSTEM = """你是长期记忆合并器。把两条记忆合并成一条更完整、简洁的事实。
+只输出合并后的正文，不要解释，不要 Markdown。"""
+
+
+class LLMMemoryJudge:
+    """用主模型做第三层判重；失败时保守返回 different，不丢新记忆。"""
+
+    def __init__(self, provider) -> None:
+        self.provider = provider
+
+    def _ask(self, system: str, user: str) -> str:
+        reply = self.provider.complete(system, [{"role": "user", "content": user}], [])
+        return (getattr(reply, "text", "") or "").strip()
+
+    def decide(self, new_text: str, existing_text: str) -> str:
+        try:
+            answer = self._ask(
+                _DECIDE_SYSTEM,
+                f"已有记忆：{existing_text}\n新记忆：{new_text}",
+            ).lower()
+        except Exception:  # noqa: BLE001 - 判重失败不能阻断记忆写入
+            return "different"
+        for word in ("same", "different", "merge"):
+            if re.search(rf"\b{word}\b", answer):
+                return word
+        return "different"
+
+    def merge(self, new_text: str, existing_text: str) -> str:
+        try:
+            merged = self._ask(
+                _MERGE_SYSTEM,
+                f"已有记忆：{existing_text}\n新记忆：{new_text}",
+            )
+        except Exception:  # noqa: BLE001
+            return ""
+        return merged
+
+
 @dataclass
 class MemoryEntry:
     id: str
@@ -87,9 +161,15 @@ class MemoryEntry:
 class MemoryStore:
     """一个 workspace 对应一份记忆。"""
 
-    def __init__(self, path: Path | str, limit: int = DEFAULT_LIMIT) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        limit: int = DEFAULT_LIMIT,
+        judge: MemoryJudge | None = None,
+    ) -> None:
         self.path = Path(path)
         self.limit = limit
+        self.judge = judge
 
     # ---------------------------------------------------------------- 读写
 
@@ -132,11 +212,17 @@ class MemoryStore:
     # ---------------------------------------------------------------- 增删
 
     def add(self, text: str, tags: list[str] | None = None) -> tuple[MemoryEntry, bool]:
-        """记一条。返回 (条目, 是否新加)；内容完全相同的重复添加返回已有的那条。"""
+        """三层判重后写入。
+
+        1. 严格指纹：归一化文本 sha1 相同 → 直接合并标签，返回已有条目；
+        2. 字符二元组 Jaccard ≥0.9 → 判重；0.7–0.89 → 模型裁决；
+        3. 模型只答 same / different / merge；merge 再让模型合并正文。
+        没有注入 judge 时，第三层保守按 different 处理（正常新增）。
+        """
         clean_full = _normalize(text)
         if not clean_full:
             raise ValueError("记忆内容不能为空")
-        # id 按**完整文本**算：两条长文本只要尾巴不同，就不能因为前 400 字相同被当成重复。
+        # id 按完整文本算：长文本只要尾巴不同，就不能因前 400 字相同被当成重复。
         entry_id = _make_id(clean_full)
         clean = clean_full
         if len(clean) > MAX_ENTRY_CHARS:
@@ -144,14 +230,38 @@ class MemoryStore:
 
         entries = self.entries()
         new_tags = sorted({t.strip() for t in (tags or []) if t.strip()})
+
+        # 第一层：严格指纹
         for existing in entries:
             if existing.id == entry_id:
-                merged = sorted(set(existing.tags) | set(new_tags))
-                if merged != existing.tags:
-                    existing.tags = merged
-                    self._write(entries)
-                return existing, False
+                return self._merge_tags(existing, entries, new_tags), False
 
+        # 第二层：确定性近似
+        best: MemoryEntry | None = None
+        best_score = 0.0
+        for existing in entries:
+            score = jaccard(clean_full, existing.text)
+            if score > best_score:
+                best, best_score = existing, score
+
+        if best is not None and best_score >= DUPLICATE_JACCARD:
+            return self._merge_tags(best, entries, new_tags), False
+
+        if best is not None and best_score >= JUDGE_JACCARD:
+            decision = "different"
+            if self.judge is not None:
+                decision = self.judge.decide(clean_full, best.text).strip().lower()
+            if decision == "same":
+                return self._merge_tags(best, entries, new_tags), False
+            if decision == "merge":
+                merged = self.judge.merge(clean_full, best.text) if self.judge else ""
+                if merged.strip():
+                    best.text = merged.strip()[:MAX_ENTRY_CHARS].rstrip()
+                    self._merge_tags(best, entries, new_tags, write=False)
+                    self._write(entries)
+                    return best, False
+
+        # 第三层判为 different，或压根没有候选 → 正常新增
         entry = MemoryEntry(
             id=entry_id,
             text=clean,
@@ -163,6 +273,21 @@ class MemoryStore:
             entries = entries[-self.limit :]
         self._write(entries)
         return entry, True
+
+    def _merge_tags(
+        self,
+        entry: MemoryEntry,
+        entries: list[MemoryEntry],
+        new_tags: list[str],
+        *,
+        write: bool = True,
+    ) -> MemoryEntry:
+        merged = sorted(set(entry.tags) | set(new_tags))
+        if merged != entry.tags:
+            entry.tags = merged
+            if write:
+                self._write(entries)
+        return entry
 
     def forget(self, entry_id: str) -> bool:
         entries = self.entries()

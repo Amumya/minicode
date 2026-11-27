@@ -42,7 +42,7 @@ from minicode.compact import CompactConfig, Compactor, provider_summarizer
 from minicode.config import Settings
 from minicode.events import Event, Recorder
 from minicode.loop import run as run_loop
-from minicode.memory import MemoryStore
+from minicode.memory import LLMMemoryJudge, MemoryStore
 from minicode.prompts import default_system
 from minicode.skills import SkillLoader
 from minicode.tasks import TaskStore
@@ -253,10 +253,14 @@ def create_app(
     def _tasks_for(state: RunState):
         return TaskStore(Path(state.workspace) / ".minicode" / "tasks") if state.tasks else None
 
-    def _memory_for(state: RunState) -> MemoryStore | None:
+    def _memory_for(state: RunState, provider=None) -> MemoryStore | None:
         if not state.memory:
             return None
-        return MemoryStore(Path(state.workspace) / ".minicode" / "memory.jsonl")
+        judge = LLMMemoryJudge(provider) if provider is not None else None
+        return MemoryStore(
+            Path(state.workspace) / ".minicode" / "memory.jsonl",
+            judge=judge,
+        )
 
     def _worker(state: RunState, cs: asyncio.Event, loop_ref, run_settings: Settings,
                 resume: dict | None, token: str) -> None:

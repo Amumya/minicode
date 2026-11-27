@@ -21,7 +21,7 @@ from minicode import __version__
 from minicode.compact import CompactConfig, Compactor, provider_summarizer
 from minicode.config import Settings
 from minicode.events import Recorder
-from minicode.memory import MemoryStore
+from minicode.memory import LLMMemoryJudge, MemoryStore
 from minicode.loop import run as run_loop
 from minicode.prompts import default_system
 from minicode.skills import SkillLoader
