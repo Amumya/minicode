@@ -423,8 +423,33 @@ def create_app(
             name=f"run-{state.id}",
         ).start()
 
+    def _settings_for_workspace(workspace: Path) -> Settings:
+        """找 key：workspace/.env → 当前目录/.env → 仓库根/.env。
+
+        默认工作区迁移到 <repo>/workspace 后，旧用户仍把 .env 放在仓库根；
+        这里做兼容，不要求用户复制/移动密钥文件。
+        """
+        candidates = [
+            workspace / ".env",
+            Path.cwd() / ".env",
+            Path(__file__).resolve().parents[3] / ".env",
+        ]
+        seen: set[Path] = set()
+        for candidate in candidates:
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                continue
+            if candidate in seen or not candidate.is_file():
+                continue
+            seen.add(candidate)
+            loaded = Settings.from_env(candidate)
+            if loaded.api_key:
+                return loaded
+        return Settings.from_env(None)
+
     def _resolve_settings(model: str | None, max_steps: int | None) -> Settings:
-        base = settings or Settings.from_env(base_workspace / ".env")
+        base = settings or _settings_for_workspace(base_workspace)
         return Settings(
             api_key=base.api_key,
             base_url=base.base_url,
