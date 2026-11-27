@@ -214,3 +214,23 @@ def test_llm_judge_only_four_answers():
         judge = LLMMemoryJudge(provider)
         assert judge.decide("新", ["旧一", "旧二"]) == expected
         assert provider.calls
+
+
+def test_llm_judge_uses_stream_when_provider_has_no_complete():
+    class Reply:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class StreamProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list[dict], list[dict]]] = []
+
+        def stream(self, system, messages, tools, on_text):
+            self.calls.append((system, messages, tools))
+            on_text("replace")
+            return Reply("replace")
+
+    provider = StreamProvider()
+    judge = LLMMemoryJudge(provider)
+    assert judge.decide("新", ["旧"]) == "replace"
+    assert provider.calls

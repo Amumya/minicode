@@ -111,7 +111,16 @@ class LLMMemoryJudge:
         self.provider = provider
 
     def _ask(self, system: str, user: str) -> str:
-        reply = self.provider.complete(system, [{"role": "user", "content": user}], [])
+        messages = [{"role": "user", "content": user}]
+        complete = getattr(self.provider, "complete", None)
+        if callable(complete):
+            reply = complete(system, messages, [])
+        else:
+            # 真实 AnthropicProvider 只有 stream()，没有 complete()。
+            stream = getattr(self.provider, "stream", None)
+            if not callable(stream):
+                raise RuntimeError("provider 既没有 complete() 也没有 stream()")
+            reply = stream(system, messages, [], lambda _text: None)
         return (getattr(reply, "text", "") or "").strip()
 
     def decide(self, new_text: str, candidates: list[str]) -> str:

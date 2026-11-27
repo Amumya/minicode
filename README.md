@@ -18,9 +18,9 @@ minicode 是一个**从零实现的多功能 Coding Agent**：工具调用内核
 | 执行治理 | 命令解析、工作区边界、受保护路径、审计事件、取消/超时 | `policy.py` / `hooks.py` / `events.py` |
 | 多代理 | 子代理 `task`、常驻 `team`（成员名册、异步邮箱、冷挂起、上下文复用） | `subagent.py` / `team.py` |
 | 产品层 | FastAPI + SSE + Redis/内存双存储 + PySide6/Edge 桌面端 | `service/` / `web/` / `app_shell.py` |
-| 评测与工程 | 隐藏测试评测、A/B 实验、441 条 Python + 83 条前端测试、CI 三作业 | `eval/` / `tests/` / `.github/` |
+| 评测与工程 | 隐藏测试评测、A/B 实验、442 条 Python + 83 条前端测试、CI 三作业 | `eval/` / `tests/` / `.github/` |
 
-当前包含 **441 条 Python 测试、83 条前端测试和 94 项界面链路检查**，CI 三个作业全部通过。
+当前包含 **442 条 Python 测试、83 条前端测试和 94 项界面链路检查**，CI 三个作业全部通过。
 项目对“权限判定、上下文压缩、多代理、中断恢复”等关键结论都保留了可复现实验记录（`eval/runs/`
 与 `docs/取舍与证据.md`）。每一层都能单独读、单独改、单独验证，也可以按层拆走复用。
 
@@ -312,7 +312,7 @@ PySide6 约 350MB，仅运行命令行时无需安装。
 
 | 部分 | 数量 | 命令 |
 |---|---|---|
-| Python 测试 | 441 条 | `pytest`（无需 API key） |
+| Python 测试 | 442 条 | `pytest`（无需 API key） |
 | 前端逻辑测试 | 83 条 | `npm --prefix web test` |
 | 界面链路检查 | 94 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业：Python 3.11 / 3.12 / 前端 | `.github/workflows/ci.yml` |
@@ -432,7 +432,7 @@ src/minicode/
   service/         FastAPI 服务与存储（内存 + Redis）
 web/               前端（TypeScript + Vite，构建产物提交至 service/web/）
 eval/              沙箱任务集、判定器、对照实验脚本与原始记录
-tests/             441 条 Python 测试与 fixture MCP server
+tests/             442 条 Python 测试与 fixture MCP server
 docs/              决策记录、MCP 配置示例、界面截图
 tools/             开发辅助脚本（store 清理、并发压测）
 ```
