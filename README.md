@@ -18,9 +18,9 @@ minicode 是一个**从零实现的多功能 Coding Agent**：工具调用内核
 | 执行治理 | 命令解析、工作区边界、受保护路径、审计事件、取消/超时 | `policy.py` / `hooks.py` / `events.py` |
 | 多代理 | 子代理 `task`、常驻 `team`（成员名册、异步邮箱、冷挂起、上下文复用） | `subagent.py` / `team.py` |
 | 产品层 | FastAPI + SSE + Redis/内存双存储 + PySide6/Edge 桌面端 | `service/` / `web/` / `app_shell.py` |
-| 评测与工程 | 隐藏测试评测、A/B 实验、442 条 Python + 83 条前端测试、CI 三作业 | `eval/` / `tests/` / `.github/` |
+| 评测与工程 | 隐藏测试评测、A/B 实验、445 条 Python + 83 条前端测试、CI 三作业 | `eval/` / `tests/` / `.github/` |
 
-当前包含 **442 条 Python 测试、83 条前端测试和 94 项界面链路检查**，CI 三个作业全部通过。
+当前包含 **445 条 Python 测试、83 条前端测试和 94 项界面链路检查**，CI 三个作业全部通过。
 项目对“权限判定、上下文压缩、多代理、中断恢复”等关键结论都保留了可复现实验记录（`eval/runs/`
 与 `docs/取舍与证据.md`）。每一层都能单独读、单独改、单独验证，也可以按层拆走复用。
 
@@ -116,7 +116,7 @@ JSON。工具参数、输出和元数据默认折叠，展开时再渲染；视�
 | 文件工具 | 读 / 写 / 改，路径限制在工作区内，测试文件受权限层保护 | CLI `--files`，界面“文件工具” |
 | 任务清单 | `todo_write`，支持 `blockedBy` 依赖与环检测 | CLI `--plan`，界面“计划” |
 | 技能 | `skills/*/SKILL.md`，目录进入系统提示词，正文按需加载 | CLI `--skills`，界面“技能” |
-| 任务图 | 创建、认领、完成并报告解锁关系，跨 run 持久化 | CLI `--tasks`，界面“任务图” |
+| 任务图 | 创建、认领、完成并报告解锁关系；服务端按会话隔离，followup 共享，删会话一起清理 | CLI `--tasks`，界面“任务图” |
 | 长期记忆 | `remember / recall / forget`，JSONL 存储，按相关度注入 | CLI `--memory`，界面“记忆” |
 | MCP | 外部 stdio server 工具，默认关闭，白名单与运行时二次校验 | CLI `--mcp`，界面“MCP” |
 | 子代理 | 独立上下文执行子任务，仅返回结论 | CLI `--subagent`，界面“子代理” |
@@ -312,7 +312,7 @@ PySide6 约 350MB，仅运行命令行时无需安装。
 
 | 部分 | 数量 | 命令 |
 |---|---|---|
-| Python 测试 | 442 条 | `pytest`（无需 API key） |
+| Python 测试 | 445 条 | `pytest`（无需 API key） |
 | 前端逻辑测试 | 83 条 | `npm --prefix web test` |
 | 界面链路检查 | 94 项 | `node web/uicheck.mjs` |
 | CI | 3 个作业：Python 3.11 / 3.12 / 前端 | `.github/workflows/ci.yml` |
@@ -424,7 +424,7 @@ src/minicode/
   compact.py       上下文压缩（大输出落盘、旧结果截断、消息整对裁剪）
   memory.py        跨 run 长期记忆（JSONL + 相关度选择）
   mcp.py           MCP 客户端（双协议版本，stdio）
-  tasks.py         任务图（依赖、认领、解锁，跨 run 持久化）
+  tasks.py         任务图（依赖、认领、解锁；服务端按会话隔离，CLI 仍为 workspace 级）
   subagent.py      子代理（上下文隔离）
   skills.py        技能目录与按需加载
   cli.py / dev.py / app_shell.py   命令行、开发环境、桌面窗口
@@ -432,7 +432,7 @@ src/minicode/
   service/         FastAPI 服务与存储（内存 + Redis）
 web/               前端（TypeScript + Vite，构建产物提交至 service/web/）
 eval/              沙箱任务集、判定器、对照实验脚本与原始记录
-tests/             442 条 Python 测试与 fixture MCP server
+tests/             445 条 Python 测试与 fixture MCP server
 docs/              决策记录、MCP 配置示例、界面截图
 tools/             开发辅助脚本（store 清理、并发压测）
 ```

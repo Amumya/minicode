@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -250,8 +251,23 @@ def create_app(
     def _skills_for(state: RunState) -> SkillLoader | None:
         return SkillLoader(Path(state.workspace) / "skills") if state.skills else None
 
+    def _conversation_root(state: RunState) -> str:
+        """沿 parent_id 找到会话根；任务图按根隔离，followup 共享同一张图。"""
+        current = state
+        seen: set[str] = set()
+        while current.parent_id and current.id not in seen:
+            seen.add(current.id)
+            parent = st.get(current.parent_id)
+            if parent is None:
+                break
+            current = parent
+        return current.id
+
     def _tasks_for(state: RunState):
-        return TaskStore(Path(state.workspace) / ".minicode" / "tasks") if state.tasks else None
+        if not state.tasks:
+            return None
+        root_id = _conversation_root(state)
+        return TaskStore(Path(state.workspace) / ".minicode" / "tasks" / root_id)
 
     def _memory_for(state: RunState, provider=None) -> MemoryStore | None:
         if not state.memory:
@@ -554,6 +570,9 @@ def create_app(
         for run_id in deleted:
             changed.pop(run_id, None)
             cancel_flags.pop(run_id, None)
+        if members:
+            task_dir = Path(members[0].workspace) / ".minicode" / "tasks" / root_id
+            shutil.rmtree(task_dir, ignore_errors=True)
         return {"root_id": root_id, "deleted": len(deleted), "run_ids": deleted}
 
     @app.get("/conversations")
@@ -707,7 +726,9 @@ def create_app(
             raise HTTPException(404, "没有这个 run")
         if not state.tasks:
             return {"enabled": False, "tasks": [], "progress": {"done": 0, "total": 0}}
-        store = TaskStore(Path(state.workspace) / ".minicode" / "tasks")
+        store = TaskStore(
+            Path(state.workspace) / ".minicode" / "tasks" / _conversation_root(state)
+        )
         tasks = store.list()
         return {
             "enabled": True,
