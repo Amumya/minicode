@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -37,7 +38,11 @@ DEFAULT_LIMIT = 200
 
 # 第二层近似判重：字符二元组 Jaccard 阈值
 DUPLICATE_JACCARD = 0.9
-JUDGE_JACCARD = 0.7
+# Jaccard 只负责召回，不负责最终判重：达到这个下限就交给 judge。
+RECALL_FLOOR = 0.05
+TOP_K = 3
+
+logger = logging.getLogger(__name__)
 
 _ASCII_TOKEN = re.compile(r"[a-z0-9_]{2,}")
 _CJK_CHUNK = re.compile(r"[\u4e00-\u9fff]+")
@@ -85,25 +90,22 @@ def jaccard(a: str, b: str) -> float:
 
 
 class MemoryJudge(Protocol):
-    """第三层判重的模型接口。只允许 same / different / merge 三种结论。"""
+    """第三层判重：只看候选语义，只允许 four-way 结论。"""
 
-    def decide(self, new_text: str, existing_text: str) -> str: ...
-    def merge(self, new_text: str, existing_text: str) -> str: ...
+    def decide(self, new_text: str, candidates: list[str]) -> str: ...
 
 
-_DECIDE_SYSTEM = """你是长期记忆去重器。比较两条记忆是否表达同一个事实。
-只输出一个词：same / different / merge。
-- same：同一个事实，只是措辞不同
-- different：两个事实
-- merge：同一个事实但有互补细节，应合并成一条
+_DECIDE_SYSTEM = """你是长期记忆去重器。比较一条新记忆和若干已有候选。
+只输出一个词：same / replace / different / skip。
+- same：已有候选已经完整覆盖新记忆，保留旧的
+- replace：新记忆更完整/更准确，应替换最接近的旧条目（不要拼接）
+- different：是另一条事实，新增
+- skip：不该写入记忆（一次性信息/噪声），也不改已有条目
 不要解释，不要标点。"""
-
-_MERGE_SYSTEM = """你是长期记忆合并器。把两条记忆合并成一条更完整、简洁的事实。
-只输出合并后的正文，不要解释，不要 Markdown。"""
 
 
 class LLMMemoryJudge:
-    """用主模型做第三层判重；失败时保守返回 different，不丢新记忆。"""
+    """用主模型做第三层裁决；失败时保守返回 different，不丢新记忆。"""
 
     def __init__(self, provider) -> None:
         self.provider = provider
@@ -112,28 +114,19 @@ class LLMMemoryJudge:
         reply = self.provider.complete(system, [{"role": "user", "content": user}], [])
         return (getattr(reply, "text", "") or "").strip()
 
-    def decide(self, new_text: str, existing_text: str) -> str:
+    def decide(self, new_text: str, candidates: list[str]) -> str:
+        listing = "\n".join(f"{i + 1}. {text}" for i, text in enumerate(candidates))
         try:
             answer = self._ask(
                 _DECIDE_SYSTEM,
-                f"已有记忆：{existing_text}\n新记忆：{new_text}",
+                f"新记忆：{new_text}\n\n已有候选：\n{listing}",
             ).lower()
         except Exception:  # noqa: BLE001 - 判重失败不能阻断记忆写入
             return "different"
-        for word in ("same", "different", "merge"):
+        for word in ("same", "replace", "different", "skip"):
             if re.search(rf"\b{word}\b", answer):
                 return word
         return "different"
-
-    def merge(self, new_text: str, existing_text: str) -> str:
-        try:
-            merged = self._ask(
-                _MERGE_SYSTEM,
-                f"已有记忆：{existing_text}\n新记忆：{new_text}",
-            )
-        except Exception:  # noqa: BLE001
-            return ""
-        return merged
 
 
 @dataclass
@@ -214,10 +207,10 @@ class MemoryStore:
     def add(self, text: str, tags: list[str] | None = None) -> tuple[MemoryEntry, bool]:
         """三层判重后写入。
 
-        1. 严格指纹：归一化文本 sha1 相同 → 直接合并标签，返回已有条目；
-        2. 字符二元组 Jaccard ≥0.9 → 判重；0.7–0.89 → 模型裁决；
-        3. 模型只答 same / different / merge；merge 再让模型合并正文。
-        没有注入 judge 时，第三层保守按 different 处理（正常新增）。
+        L1：严格指纹，相同直接合并标签；
+        L2：Jaccard 只召回 top-k 候选；≥0.9 仍走零成本快路径；
+            只要 best ≥ RECALL_FLOOR(0.05) 且注入了 judge，就交给 L3；
+        L3：模型答 same / replace / different / skip。
         """
         clean_full = _normalize(text)
         if not clean_full:
@@ -231,48 +224,66 @@ class MemoryStore:
         entries = self.entries()
         new_tags = sorted({t.strip() for t in (tags or []) if t.strip()})
 
-        # 第一层：严格指纹
+        # L1：严格指纹
         for existing in entries:
             if existing.id == entry_id:
                 return self._merge_tags(existing, entries, new_tags), False
 
-        # 第二层：确定性近似
-        best: MemoryEntry | None = None
-        best_score = 0.0
-        for existing in entries:
-            score = jaccard(clean_full, existing.text)
-            if score > best_score:
-                best, best_score = existing, score
+        # L2：召回 top-k；Jaccard 不承担最终决策
+        ranked = sorted(
+            ((jaccard(clean_full, existing.text), existing) for existing in entries),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )[:TOP_K]
+        if not ranked:
+            return self._add_entry(entries, entry_id, clean, new_tags), True
 
-        if best is not None and best_score >= DUPLICATE_JACCARD:
+        best_score, best = ranked[0]
+        candidates = [existing.text for _, existing in ranked]
+
+        # ≥0.9 是零成本快路径，不调用模型
+        if best_score >= DUPLICATE_JACCARD:
             return self._merge_tags(best, entries, new_tags), False
 
-        if best is not None and best_score >= JUDGE_JACCARD:
-            decision = "different"
-            if self.judge is not None:
-                decision = self.judge.decide(clean_full, best.text).strip().lower()
-            if decision == "same":
-                return self._merge_tags(best, entries, new_tags), False
-            if decision == "merge":
-                merged = self.judge.merge(clean_full, best.text) if self.judge else ""
-                if merged.strip():
-                    best.text = merged.strip()[:MAX_ENTRY_CHARS].rstrip()
-                    self._merge_tags(best, entries, new_tags, write=False)
-                    self._write(entries)
-                    return best, False
+        decision = "different"
+        if best_score >= RECALL_FLOOR and self.judge is not None:
+            logger.debug(
+                "dedup: top=%s best=%.3f candidates=%d -> judge",
+                best.id, best_score, len(ranked),
+            )
+            try:
+                decision = self.judge.decide(clean_full, candidates).strip().lower()
+            except Exception:  # noqa: BLE001 - judge 失败不阻断写入
+                logger.exception("dedup judge failed")
+                decision = "different"
+            logger.debug("dedup: judge -> %s", decision)
 
-        # 第三层判为 different，或压根没有候选 → 正常新增
-        entry = MemoryEntry(
-            id=entry_id,
-            text=clean,
-            tags=new_tags,
-            created_at=time.time(),
-        )
+        if decision == "same":
+            return self._merge_tags(best, entries, new_tags), False
+        if decision == "skip":
+            return best, False
+        if decision == "replace":
+            best.text = clean
+            self._merge_tags(best, entries, new_tags, write=False)
+            self._write(entries)
+            return best, False
+
+        # different / 无 judge / 低于召回下限 → 正常新增
+        return self._add_entry(entries, entry_id, clean, new_tags), True
+
+    def _add_entry(
+        self,
+        entries: list[MemoryEntry],
+        entry_id: str,
+        clean: str,
+        tags: list[str],
+    ) -> MemoryEntry:
+        entry = MemoryEntry(id=entry_id, text=clean, tags=tags, created_at=time.time())
         entries.append(entry)
         if len(entries) > self.limit:
             entries = entries[-self.limit :]
         self._write(entries)
-        return entry, True
+        return entry
 
     def _merge_tags(
         self,
